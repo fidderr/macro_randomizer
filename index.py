@@ -129,6 +129,8 @@ overlay = None
 canvas = None
 preview_overlay = None
 preview_canvas = None
+sparse_recording = False
+last_ts = None
 
 # Controllers
 kb_controller = KeyboardController()
@@ -202,32 +204,42 @@ def on_press(key):
             return False
 
 def on_release(key):
-    global recording
+    global recording, last_ts
     if recording:
         key_str = str(key).replace("'", "") if hasattr(key, 'char') else str(key)
         timestamp = press_times.get(key_str, time.time() - start_time)
         actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp, 'comment': ''})
         press_times.pop(key_str, None)
+        if sparse_recording:
+            last_ts = time.time() - start_time
 
 def on_move(x, y):
-    if recording:
+    if recording and not sparse_recording:
         timestamp = time.time() - start_time
         actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
 
 def on_click(x, y, button, pressed):
     if recording:
         ts = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
         button_key = f"mouse.{str(button).split('.')[-1]}"
         if pressed:
-            press_times[button_key] = ts
+            if sparse_recording:
+                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+                press_times[button_key] = ts
+            else:
+                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+                press_times[button_key] = ts
         else:
+            if not sparse_recording:
+                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
             timestamp = press_times.get(button_key, ts)
             actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp, 'comment': ''})
             press_times.pop(button_key, None)
+            if sparse_recording:
+                last_ts = ts
 
 def start_recording():
-    global actions, start_time, recording, listeners, press_times
+    global actions, start_time, recording, listeners, press_times, sparse_recording, last_ts
     if recording:
         messagebox.showwarning("Already Recording", "Recording is already in progress.")
         return
@@ -247,13 +259,18 @@ def start_recording():
     actions = []  # Reset for new recording
     press_times = {}
     start_time = time.time()
+    sparse_recording = sparse_var.get()
+    if sparse_recording:
+        last_ts = 0.0
+    else:
+        last_ts = None
     recording = True
     update_status("Recording... Press Esc to stop.")
     status_label.config(background='red', foreground='white')
     record_btn.config(text="Stop Recording (F3)", command=stop_recording, state=tk.NORMAL)
 
     kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click)
+    mouse_listener = mouse.Listener(on_move=on_move if not sparse_recording else None, on_click=on_click)
 
     kb_listener.start()
     mouse_listener.start()
@@ -277,14 +294,29 @@ def stop_recording():
     # Post-process actions
     if actions:
         actions.sort(key=lambda x: x['timestamp'])
-        actions[0]['min_delay'] = 0.0
-        actions[0]['max_delay'] = 0.0
-        prev_ts = actions[0]['timestamp']
-        for i in range(1, len(actions)):
-            delay = actions[i]['timestamp'] - prev_ts
-            actions[i]['min_delay'] = delay
-            actions[i]['max_delay'] = delay
-            prev_ts = actions[i]['timestamp']
+        if sparse_recording:
+            prev_ts = 0.0
+            for action in actions:
+                ts = action['timestamp']
+                d = ts - prev_ts
+                if action['type'] == 'mouse_move':
+                    action['min_delay'] = 0.0
+                    action['max_delay'] = 0.0
+                    action['min_move_duration'] = d
+                    action['max_move_duration'] = d
+                else:
+                    action['min_delay'] = 0.0
+                    action['max_delay'] = 0.0
+                prev_ts = ts
+        else:
+            actions[0]['min_delay'] = 0.0
+            actions[0]['max_delay'] = 0.0
+            prev_ts = actions[0]['timestamp']
+            for i in range(1, len(actions)):
+                delay = actions[i]['timestamp'] - prev_ts
+                actions[i]['min_delay'] = delay
+                actions[i]['max_delay'] = delay
+                prev_ts = actions[i]['timestamp']
         # Remove timestamp
         for action in actions:
             del action['timestamp']
@@ -974,7 +1006,7 @@ def capture_zone():
                 canvas.delete(drag_rect[0])
             sx, sy = start_pos[0]
             drag_rect[0] = canvas.create_rectangle(sx, sy, x, y, outline='red', width=2, fill='')
-    
+
     def stop_capture():
         global capture_listener_mouse, overlay, canvas
         if capture_listener_mouse:
@@ -1202,6 +1234,11 @@ button_frame.pack(fill=tk.X)
 record_btn = ttk.Button(button_frame, text="Record (F3)", command=start_recording)
 record_btn.grid(row=0, column=0, padx=5)
 Tooltip(record_btn, "Start recording mouse and keyboard actions. Press Esc to stop.")
+
+sparse_var = tk.BooleanVar(value=False)
+sparse_check = ttk.Checkbutton(button_frame, text="Sparse Recording", variable=sparse_var)
+sparse_check.grid(row=0, column=1, padx=5)
+Tooltip(sparse_check, "Optional: Only record mouse positions at clicks, setting move duration to time between clicks.")
 
 start_stop_btn = ttk.Button(button_frame, text="Start (F1)", command=toggle_playback, style='GreenButton.TButton')
 start_stop_btn.grid(row=0, column=3, padx=5)
