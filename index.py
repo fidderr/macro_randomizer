@@ -150,11 +150,14 @@ def update_tree():
 def get_action_details(action):
     if action['type'] == 'key_action':
         key = action.get('key', '')
+        event_type = action.get('event_type', 'tap')
+        hold_dur = action.get('hold_duration', {'min': 0.0, 'max': 0.0})
+        hold_str = f"{hold_dur['min']:.3f}-{hold_dur['max']:.3f}s" if hold_dur['min'] != hold_dur['max'] else f"{hold_dur['min']:.3f}s"
         if key.startswith('mouse.'):
             button = key[6:].capitalize()
-            return f"Click Mouse Button: {button}"
+            return f"{event_type.capitalize()} Mouse Button: {button} (Hold: {hold_str})"
         else:
-            return f"Press Key: {key}"
+            return f"{event_type.capitalize()} Key: {key} (Hold: {hold_str})"
     elif action['type'] == 'mouse_move':
         return f"Position: ({action.get('x', 0)}, {action.get('y', 0)}), Duration: {action.get('move_duration', 0.0):.3f}s"
     return ""
@@ -163,18 +166,28 @@ def on_press(key):
     global recording
     if recording:
         key_str = str(key).replace("'", "") if hasattr(key, 'char') else str(key)
-        press_times[key_str] = time.time() - start_time
-        if key == keyboard.Key.esc:
-            stop_recording()
-            return False
+        timestamp = time.time() - start_time
+        press_times[key_str] = {'press_time': timestamp, 'is_pressed': True}
+        actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp, 'event_type': 'press'})
 
 def on_release(key):
     global recording
     if recording:
         key_str = str(key).replace("'", "") if hasattr(key, 'char') else str(key)
-        timestamp = press_times.get(key_str, time.time() - start_time)
-        actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp})
-        press_times.pop(key_str, None)
+        timestamp = time.time() - start_time
+        if key_str in press_times and press_times[key_str]['is_pressed']:
+            hold_dur = timestamp - press_times[key_str]['press_time']
+            if hold_dur < 0.05:  # Threshold for "tap"
+                # Merge last 'press' into 'tap'
+                for act in reversed(actions):
+                    if act['key'] == key_str and act['event_type'] == 'press':
+                        act['event_type'] = 'tap'
+                        act['hold_duration'] = {'min': hold_dur, 'max': hold_dur}  # Fixed
+                        break
+            else:
+                # Add separate 'release'
+                actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp, 'event_type': 'release'})
+            press_times[key_str]['is_pressed'] = False
 
 def on_move(x, y):
     if recording:
@@ -187,11 +200,21 @@ def on_click(x, y, button, pressed):
         actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': ts - 0.001, 'move_duration': 0.0})
         button_key = f"mouse.{str(button).split('.')[-1]}"
         if pressed:
-            press_times[button_key] = ts
+            press_times[button_key] = {'press_time': ts, 'is_pressed': True}
+            actions.append({'type': 'key_action', 'key': button_key, 'timestamp': ts, 'event_type': 'press'})
         else:
-            timestamp = press_times.get(button_key, ts)
-            actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp})
-            press_times.pop(button_key, None)
+            if button_key in press_times and press_times[button_key]['is_pressed']:
+                hold_dur = ts - press_times[button_key]['press_time']
+                if hold_dur < 0.05:
+                    # Merge to 'tap'
+                    for act in reversed(actions):
+                        if act['key'] == button_key and act['event_type'] == 'press':
+                            act['event_type'] = 'tap'
+                            act['hold_duration'] = {'min': hold_dur, 'max': hold_dur}
+                            break
+                else:
+                    actions.append({'type': 'key_action', 'key': button_key, 'timestamp': ts, 'event_type': 'release'})
+                press_times[button_key]['is_pressed'] = False
 
 def start_recording():
     global actions, start_time, recording, listeners, press_times
@@ -273,6 +296,11 @@ def load_macro():
     try:
         with open(filename, 'r') as f:
             actions = json.load(f)
+        # Backward compatibility for hold_duration
+        for action in actions:
+            if 'hold_duration' in action and isinstance(action['hold_duration'], (int, float)):
+                val = float(action['hold_duration'])
+                action['hold_duration'] = {'min': val, 'max': val}
         current_filename = filename
         update_tree()
         update_status("Macro loaded.")
@@ -343,6 +371,7 @@ def playback_macro():
                     break
                 if action['type'] == 'key_action':
                     key = action['key']
+                    event_type = action.get('event_type', 'tap')  # Default to tap for backward compatibility
                     items = []
                     def get_key(kstr):
                         if kstr.startswith('Key.'):
@@ -360,15 +389,32 @@ def playback_macro():
                     else:
                         key_obj = get_key(key)
                         items = [(kb_controller, key_obj)]
-                    for ctrl, itm in items:
-                        if itm is not None:
-                            ctrl.press(itm)
-                            pressed_items.append((ctrl, itm))
-                    for ctrl, itm in reversed(items):
-                        if itm is not None:
-                            ctrl.release(itm)
-                        if (ctrl, itm) in pressed_items:
-                            pressed_items.remove((ctrl, itm))
+                    if event_type == 'press':
+                        for ctrl, itm in items:
+                            if itm is not None:
+                                ctrl.press(itm)
+                                pressed_items.append((ctrl, itm))
+                    elif event_type == 'release':
+                        for ctrl, itm in reversed(items):
+                            if itm is not None:
+                                ctrl.release(itm)
+                            if (ctrl, itm) in pressed_items:
+                                pressed_items.remove((ctrl, itm))
+                    elif event_type == 'tap':
+                        hold_dur = action.get('hold_duration', {'min': 0.0, 'max': 0.0})
+                        min_dur, max_dur = hold_dur.get('min', 0.0), hold_dur.get('max', 0.0)
+                        actual_hold = min_dur if min_dur == max_dur else random.uniform(min_dur, max_dur)
+                        for ctrl, itm in items:
+                            if itm is not None:
+                                ctrl.press(itm)
+                                pressed_items.append((ctrl, itm))
+                        if actual_hold > 0:
+                            interruptible_sleep(actual_hold)  # Hold for (random) duration if set
+                        for ctrl, itm in reversed(items):
+                            if itm is not None:
+                                ctrl.release(itm)
+                            if (ctrl, itm) in pressed_items:
+                                pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
                     move_dur = action.get('move_duration', 0.0)
                     human_move(current_pos[0], current_pos[1], action['x'], action['y'], move_dur, seed=hash((current_pos, (action['x'], action['y']))))
@@ -442,6 +488,8 @@ def insert_action(action_type, after_iid=None):
     
     if action_type == 'key_action':
         new_action['key'] = 'a'
+        new_action['event_type'] = 'tap'  # New: default to 'tap'
+        new_action['hold_duration'] = {'min': 0.001, 'max': 0.3}  # New: default to random 1-300ms
     elif action_type == 'mouse_move':
         new_action['x'] = 0
         new_action['y'] = 0
@@ -506,6 +554,12 @@ def populate_editor(action):
     capture_pos_btn.grid_remove()
     move_dur_label.grid_remove()
     move_dur_entry.grid_remove()
+    event_type_label.grid_remove()
+    event_type_combo.grid_remove()
+    min_hold_label.grid_remove()
+    min_hold_entry.grid_remove()
+    max_hold_label.grid_remove()
+    max_hold_entry.grid_remove()
 
     if action['type'] == 'key_action':
         key_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
@@ -513,6 +567,21 @@ def populate_editor(action):
         capture_btn.grid(row=1, column=4, padx=5, pady=5)
         key_entry.config(state='normal')
         capture_btn.config(state='normal')
+        event_type_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        event_type_combo.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        event_type_combo.config(state='readonly')
+        event_type_var.set(action.get('event_type', 'tap'))
+        if action['event_type'] == 'tap':
+            hold_dur = action.get('hold_duration', {'min': 0.0, 'max': 0.0})
+            min_hold_label.grid(row=2, column=2, padx=5, pady=5, sticky=tk.E)
+            min_hold_entry.grid(row=2, column=3, padx=5, pady=5, sticky=tk.W)
+            min_hold_entry.config(state='normal')
+            min_hold_var.set(f"{hold_dur['min']:.3f}")
+
+            max_hold_label.grid(row=2, column=4, padx=5, pady=5, sticky=tk.E)
+            max_hold_entry.grid(row=2, column=5, padx=5, pady=5, sticky=tk.W)
+            max_hold_entry.config(state='normal')
+            max_hold_var.set(f"{hold_dur['max']:.3f}")
     elif action['type'] == 'mouse_move':
         x_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
         x_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
@@ -535,12 +604,18 @@ def clear_editor():
     x_var.set('')
     y_var.set('')
     move_dur_var.set('')
+    event_type_var.set('')
+    min_hold_var.set('')
+    max_hold_var.set('')
     delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
     key_entry.config(state='disabled')
     x_entry.config(state='disabled')
     y_entry.config(state='disabled')
     move_dur_entry.config(state='disabled')
+    event_type_combo.config(state='disabled')
+    min_hold_entry.config(state='disabled')
+    max_hold_entry.config(state='disabled')
     capture_btn.config(state='disabled')
     capture_pos_btn.config(state='disabled')
     save_btn.config(state='disabled')
@@ -555,6 +630,12 @@ def clear_editor():
     capture_pos_btn.grid_remove()
     move_dur_label.grid_remove()
     move_dur_entry.grid_remove()
+    event_type_label.grid_remove()
+    event_type_combo.grid_remove()
+    min_hold_label.grid_remove()
+    min_hold_entry.grid_remove()
+    max_hold_label.grid_remove()
+    max_hold_entry.grid_remove()
 
 def on_type_change(event):
     action = actions[selected_idx]
@@ -564,6 +645,8 @@ def on_type_change(event):
         action['move_duration'] = 0.5 if new_type == 'mouse_move' else 0.0
         if new_type == 'key_action':
             action['key'] = 'a'
+            action['event_type'] = 'tap'
+            action['hold_duration'] = {'min': 0.001, 'max': 0.3}
             if 'x' in action:
                 del action['x']
             if 'y' in action:
@@ -573,6 +656,10 @@ def on_type_change(event):
             action['y'] = 0
             if 'key' in action:
                 del action['key']
+            if 'event_type' in action:
+                del action['event_type']
+            if 'hold_duration' in action:
+                del action['hold_duration']
         populate_editor(action)
         update_tree()
 
@@ -592,6 +679,15 @@ def save_changes():
             action['key'] = key_var.get().strip()
             if not action['key']:
                 raise ValueError("Key cannot be empty.")
+            action['event_type'] = event_type_var.get()
+            if action['event_type'] == 'tap':
+                min_dur = float(min_hold_var.get())
+                max_dur = float(max_hold_var.get())
+                if min_dur < 0 or max_dur < 0 or min_dur > max_dur:
+                    raise ValueError("Hold durations must be non-negative and min <= max.")
+                action['hold_duration'] = {'min': min_dur, 'max': max_dur}
+            else:
+                action.pop('hold_duration', None)  # Not needed for press/release
     except ValueError as e:
         messagebox.showerror("Invalid Input", str(e) or "Invalid values entered.")
         return
@@ -873,6 +969,9 @@ key_var = tk.StringVar()
 x_var = tk.StringVar()
 y_var = tk.StringVar()
 move_dur_var = tk.StringVar()
+event_type_var = tk.StringVar()
+min_hold_var = tk.StringVar()
+max_hold_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 delay_label = ttk.Label(editor_frame, text="Delay (seconds):")
@@ -909,6 +1008,18 @@ Tooltip(capture_pos_btn, "Capture current mouse position.")
 move_dur_label = ttk.Label(editor_frame, text="Move Duration (seconds):")
 move_dur_entry = ttk.Entry(editor_frame, textvariable=move_dur_var, state='disabled', width=15)
 Tooltip(move_dur_entry, "Time to perform the mouse movement (human-like if >0).")
+
+event_type_label = ttk.Label(editor_frame, text="Event Type:")
+event_type_combo = ttk.Combobox(editor_frame, values=['tap', 'press', 'release'], textvariable=event_type_var, state='disabled', width=15)
+Tooltip(event_type_combo, "Tap: press+release; Press: start hold; Release: end hold.")
+
+min_hold_label = ttk.Label(editor_frame, text="Min Hold (s):")
+min_hold_entry = ttk.Entry(editor_frame, textvariable=min_hold_var, state='disabled', width=15)
+Tooltip(min_hold_entry, "Minimum hold time for 'tap' (random if min < max).")
+
+max_hold_label = ttk.Label(editor_frame, text="Max Hold (s):")
+max_hold_entry = ttk.Entry(editor_frame, textvariable=max_hold_var, state='disabled', width=15)
+Tooltip(max_hold_entry, "Maximum hold time for 'tap' (fixed if min == max).")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
 save_btn.grid(row=3, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
