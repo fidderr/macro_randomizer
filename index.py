@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, Menu, Spinbox
 from pynput import keyboard, mouse
 from pynput.keyboard import Controller as KeyboardController, Key
+from pynput.keyboard import GlobalHotKeys
 from pynput.mouse import Controller as MouseController, Button
 import random  # For seeding randomness
 
@@ -206,6 +207,8 @@ def start_recording():
     status_label.config(background='#ffdddd', foreground='black')
     if not numpy_available:
         update_status("Warning: numpy not installed, mouse movements will be instant.")
+    record_btn.config(state=tk.DISABLED)
+    start_stop_btn.config(state=tk.DISABLED)
     root.update()
     time.sleep(3)
     actions = []  # Reset for new recording
@@ -214,7 +217,7 @@ def start_recording():
     recording = True
     update_status("Recording... Press Esc to stop.")
     status_label.config(background='red', foreground='white')
-    record_btn.config(state=tk.DISABLED)
+    record_btn.config(text="Stop Recording (F3)", command=stop_recording, state=tk.NORMAL)
 
     kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click)
@@ -236,7 +239,8 @@ def stop_recording():
         del listeners['mouse']
     update_status("Recording stopped.")
     status_label.config(background='#f0f0f0', foreground='black')
-    record_btn.config(state=tk.NORMAL)
+    record_btn.config(text="Record (F3)", command=start_recording, state=tk.NORMAL)
+    start_stop_btn.config(state=tk.NORMAL)
     # Post-process actions
     if actions:
         actions.sort(key=lambda x: x['timestamp'])
@@ -249,6 +253,15 @@ def stop_recording():
         for action in actions:
             del action['timestamp']
     update_tree()
+
+def new_macro():
+    global actions, current_filename
+    if actions and messagebox.askyesno("Unsaved Changes", "Create new will clear current actions. Save first?"):
+        save_macro()
+    actions = []
+    current_filename = None
+    update_tree()
+    update_status("New macro created.")
 
 def load_macro():
     global actions, current_filename
@@ -401,33 +414,26 @@ def update_ui_for_playback():
     if playback_active:
         start_stop_btn.config(text="Stop (F1)", style='RedButton.TButton')
         record_btn.config(state=tk.DISABLED)
-        load_btn.config(state=tk.DISABLED)
-        save_btn_gui.config(state=tk.DISABLED)
         repeat_spin.config(state=tk.DISABLED)
         save_btn.config(state=tk.DISABLED)
     else:
         start_stop_btn.config(text="Start (F1)", style='GreenButton.TButton')
         record_btn.config(state=tk.NORMAL)
-        load_btn.config(state=tk.NORMAL)
-        save_btn_gui.config(state=tk.NORMAL)
         repeat_spin.config(state='normal')
         save_btn.config(state=tk.NORMAL)
 
-def on_hotkey_press(key):
+def hotkey_f1():
     try:
-        if key == keyboard.Key.f1:
-            root.after(0, toggle_playback)
-            return False
-        elif key == keyboard.Key.f3:
-            if not recording:
-                root.after(0, start_recording)
-            return False
-        elif key == keyboard.Key.f4:
-            if recording:
-                root.after(0, stop_recording)
-            elif playback_active:
-                root.after(0, stop_playback)
-            return False
+        root.after(0, toggle_playback)
+    except Exception:
+        pass
+
+def hotkey_f3():
+    try:
+        if not recording:
+            root.after(0, start_recording)
+        elif recording:
+            root.after(0, stop_recording)
     except Exception:
         pass
 
@@ -801,22 +807,15 @@ style.configure('RedButton.TButton', background='#e74c3c', foreground='white')
 # Menu bar for better UX
 menubar = Menu(root)
 file_menu = Menu(menubar, tearoff=0)
+file_menu.add_command(label="New Macro", command=new_macro, accelerator="Ctrl+N")
 file_menu.add_command(label="Load Macro", command=load_macro, accelerator="Ctrl+O")
 file_menu.add_command(label="Save Macro", command=save_macro, accelerator="Ctrl+S")
 menubar.add_cascade(label="File", menu=file_menu)
 
-record_menu = Menu(menubar, tearoff=0)
-record_menu.add_command(label="Start Recording", command=start_recording, accelerator="F3")
-record_menu.add_command(label="Stop Recording", command=stop_recording, accelerator="F4")
-menubar.add_cascade(label="Record", menu=record_menu)
-
-macro_menu = Menu(menubar, tearoff=0)
-macro_menu.add_command(label="Start/Stop", command=toggle_playback, accelerator="F1")
-menubar.add_cascade(label="Macro", menu=macro_menu)
-
 root.config(menu=menubar)
 
 # Bind keyboard shortcuts
+root.bind("<Control-n>", lambda e: new_macro())
 root.bind("<Control-o>", lambda e: load_macro())
 root.bind("<Control-s>", lambda e: save_macro())
 
@@ -836,14 +835,6 @@ button_frame.pack(fill=tk.X)
 record_btn = ttk.Button(button_frame, text="Record (F3)", command=start_recording)
 record_btn.grid(row=0, column=0, padx=5)
 Tooltip(record_btn, "Start recording mouse and keyboard actions. Press Esc to stop.")
-
-load_btn = ttk.Button(button_frame, text="Load", command=load_macro)
-load_btn.grid(row=0, column=1, padx=5)
-Tooltip(load_btn, "Load a saved macro from file.")
-
-save_btn_gui = ttk.Button(button_frame, text="Save", command=save_macro)  # Renamed to avoid conflict
-save_btn_gui.grid(row=0, column=2, padx=5)
-Tooltip(save_btn_gui, "Save the current macro to file.")
 
 start_stop_btn = ttk.Button(button_frame, text="Start (F1)", command=toggle_playback, style='GreenButton.TButton')
 start_stop_btn.grid(row=0, column=3, padx=5)
@@ -938,7 +929,10 @@ tree.bind("<Button-1>", on_button_press)
 tree.bind("<ButtonRelease-1>", on_button_release)
 
 # Start global hotkey listener
-hotkey_listener = keyboard.Listener(on_press=on_hotkey_press)
+hotkey_listener = GlobalHotKeys({
+    '<f1>': hotkey_f1,
+    '<f3>': hotkey_f3,
+})
 hotkey_listener.start()
 
 # Handle window close
