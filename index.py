@@ -1021,7 +1021,6 @@ def capture_zone():
     global overlay, canvas
     start_pos = [None]
     drag_rect = [None]
-    trans_color = '#ab23ff'  # Unique transparent color
 
     def on_capture_click(x, y, button, pressed):
         if button == Button.left:
@@ -1060,20 +1059,24 @@ def capture_zone():
             canvas = None
 
     stop_capture()
-    # Create transparent overlay
-    overlay = tk.Toplevel(root)
-    overlay.overrideredirect(True)
-    overlay.attributes('-topmost', True)
-    overlay.attributes('-transparentcolor', trans_color)
-    w = root.winfo_screenwidth()
-    h = root.winfo_screenheight()
-    overlay.geometry(f"{w}x{h}+0+0")
-    canvas = tk.Canvas(overlay, bg=trans_color, highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True)
-
     update_status("Hold left mouse and drag to select zone in 3 seconds...")
     root.update()
     time.sleep(3)
+    # Create overlay after sleep
+    overlay = tk.Toplevel(root)
+    overlay.overrideredirect(True)
+    overlay.attributes('-topmost', True)
+    w = root.winfo_screenwidth()
+    h = root.winfo_screenheight()
+    overlay.geometry(f"{w}x{h}+0+0")
+    if block_underlying_var.get():
+        overlay.attributes('-alpha', 0.3)
+        canvas = tk.Canvas(overlay, bg='black', highlightthickness=0)
+    else:
+        trans_color = '#ab23ff'
+        overlay.attributes('-transparentcolor', trans_color)
+        canvas = tk.Canvas(overlay, bg=trans_color, highlightthickness=0)
+    canvas.pack(fill=tk.BOTH, expand=True)
     capture_listener_mouse = mouse.Listener(on_click=on_capture_click, on_move=on_capture_move)
     capture_listener_mouse.start()
     update_status("Hold left mouse and drag to select zone...")
@@ -1293,6 +1296,11 @@ sparse_var = tk.BooleanVar(value=False)
 sparse_check = ttk.Checkbutton(button_frame, text="Sparse Recording", variable=sparse_var)
 sparse_check.grid(row=0, column=1, padx=5)
 Tooltip(sparse_check, "Optional: Only record mouse positions at clicks, setting move duration to time between clicks.")
+
+block_underlying_var = tk.BooleanVar(value=True)
+block_check = ttk.Checkbutton(button_frame, text="Block During Capture", variable=block_underlying_var)
+block_check.grid(row=0, column=2, padx=5)
+Tooltip(block_check, "Dims the screen during zone capture to prevent unintended interactions with underlying applications.")
 
 start_stop_btn = ttk.Button(button_frame, text="Start (F1)", command=toggle_playback, style='GreenButton.TButton')
 start_stop_btn.grid(row=0, column=3, padx=5)
