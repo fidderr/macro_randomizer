@@ -118,6 +118,8 @@ prev_target = None
 potential_source = None
 drag_initiated = False
 press_y = 0
+overlay = None
+canvas = None
 
 # Controllers
 kb_controller = KeyboardController()
@@ -162,7 +164,11 @@ def get_action_details(action):
         min_dur = action.get('min_move_duration', 0.0)
         max_dur = action.get('max_move_duration', 0.0)
         dur_str = f"{min_dur:.3f} - {max_dur:.3f}"
-        return f"Position: ({action.get('x', 0)}, {action.get('y', 0)}), Duration: {dur_str}s"
+        min_x = action.get('min_x', 0)
+        max_x = action.get('max_x', 0)
+        min_y = action.get('min_y', 0)
+        max_y = action.get('max_y', 0)
+        return f"Position: ({min_x}-{max_x}, {min_y}-{max_y}), Duration: {dur_str}s"
     return ""
 
 def on_press(key):
@@ -185,12 +191,12 @@ def on_release(key):
 def on_move(x, y):
     if recording:
         timestamp = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
+        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
 
 def on_click(x, y, button, pressed):
     if recording:
         ts = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
+        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
         button_key = f"mouse.{str(button).split('.')[-1]}"
         if pressed:
             press_times[button_key] = ts
@@ -374,8 +380,10 @@ def playback_macro():
                             pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
                     move_dur = random.uniform(action.get('min_move_duration', 0.0), action.get('max_move_duration', 0.0))
-                    human_move(current_pos[0], current_pos[1], action['x'], action['y'], move_dur, seed=hash((current_pos, (action['x'], action['y']))))
-                    current_pos = (action['x'], action['y'])
+                    dest_x = random.uniform(action['min_x'], action['max_x'])
+                    dest_y = random.uniform(action['min_y'], action['max_y'])
+                    human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_dur, seed=hash((current_pos, (dest_x, dest_y))))
+                    current_pos = (dest_x, dest_y)
             rep += 1
             if repeat_mode == "Loops" and rep >= repeat_value:
                 break
@@ -445,8 +453,10 @@ def insert_action(action_type, after_iid=None):
     if action_type == 'key_action':
         new_action['key'] = 'a'
     elif action_type == 'mouse_move':
-        new_action['x'] = 0
-        new_action['y'] = 0
+        new_action['min_x'] = 0
+        new_action['max_x'] = 0
+        new_action['min_y'] = 0
+        new_action['max_y'] = 0
         new_action['min_move_duration'] = 0.5
         new_action['max_move_duration'] = 0.5
     
@@ -496,8 +506,10 @@ def populate_editor(action):
     type_combo.config(state='readonly')
 
     key_var.set(action.get('key', ''))
-    x_var.set(str(action.get('x', 0)))
-    y_var.set(str(action.get('y', 0)))
+    min_x_var.set(str(action.get('min_x', 0)))
+    max_x_var.set(str(action.get('max_x', 0)))
+    min_y_var.set(str(action.get('min_y', 0)))
+    max_y_var.set(str(action.get('max_y', 0)))
     min_move_dur_var.set(f"{action.get('min_move_duration', 0.0):.3f}")
     max_move_dur_var.set(f"{action.get('max_move_duration', 0.0):.3f}")
 
@@ -505,11 +517,15 @@ def populate_editor(action):
     key_label.grid_remove()
     key_entry.grid_remove()
     capture_btn.grid_remove()
-    x_label.grid_remove()
-    x_entry.grid_remove()
-    y_label.grid_remove()
-    y_entry.grid_remove()
-    capture_pos_btn.grid_remove()
+    min_x_label.grid_remove()
+    min_x_entry.grid_remove()
+    max_x_label.grid_remove()
+    max_x_entry.grid_remove()
+    min_y_label.grid_remove()
+    min_y_entry.grid_remove()
+    max_y_label.grid_remove()
+    max_y_entry.grid_remove()
+    capture_zone_btn.grid_remove()
     min_move_dur_label.grid_remove()
     min_move_dur_entry.grid_remove()
     max_move_dur_label.grid_remove()
@@ -522,18 +538,24 @@ def populate_editor(action):
         key_entry.config(state='normal')
         capture_btn.config(state='normal')
     elif action['type'] == 'mouse_move':
-        x_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
-        x_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
-        y_label.grid(row=2, column=2, padx=5, pady=5, sticky=tk.E)
-        y_entry.grid(row=2, column=3, padx=5, pady=5, sticky=tk.W)
-        capture_pos_btn.grid(row=2, column=4, padx=5, pady=5)
-        min_move_dur_label.grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
-        min_move_dur_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
-        max_move_dur_label.grid(row=3, column=2, padx=5, pady=5, sticky=tk.E)
-        max_move_dur_entry.grid(row=3, column=3, padx=5, pady=5, sticky=tk.W)
-        x_entry.config(state='normal')
-        y_entry.config(state='normal')
-        capture_pos_btn.config(state='normal')
+        min_x_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        min_x_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        max_x_label.grid(row=2, column=2, padx=5, pady=5, sticky=tk.E)
+        max_x_entry.grid(row=2, column=3, padx=5, pady=5, sticky=tk.W)
+        min_y_label.grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
+        min_y_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+        max_y_label.grid(row=3, column=2, padx=5, pady=5, sticky=tk.E)
+        max_y_entry.grid(row=3, column=3, padx=5, pady=5, sticky=tk.W)
+        capture_zone_btn.grid(row=3, column=4, padx=5, pady=5)
+        min_move_dur_label.grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
+        min_move_dur_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
+        max_move_dur_label.grid(row=4, column=2, padx=5, pady=5, sticky=tk.E)
+        max_move_dur_entry.grid(row=4, column=3, padx=5, pady=5, sticky=tk.W)
+        min_x_entry.config(state='normal')
+        max_x_entry.config(state='normal')
+        min_y_entry.config(state='normal')
+        max_y_entry.config(state='normal')
+        capture_zone_btn.config(state='normal')
         min_move_dur_entry.config(state='normal')
         max_move_dur_entry.config(state='normal')
     
@@ -544,30 +566,38 @@ def clear_editor():
     max_delay_var.set('')
     type_combo.set('')
     key_var.set('')
-    x_var.set('')
-    y_var.set('')
+    min_x_var.set('')
+    max_x_var.set('')
+    min_y_var.set('')
+    max_y_var.set('')
     min_move_dur_var.set('')
     max_move_dur_var.set('')
     min_delay_entry.config(state='disabled')
     max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
     key_entry.config(state='disabled')
-    x_entry.config(state='disabled')
-    y_entry.config(state='disabled')
+    min_x_entry.config(state='disabled')
+    max_x_entry.config(state='disabled')
+    min_y_entry.config(state='disabled')
+    max_y_entry.config(state='disabled')
     min_move_dur_entry.config(state='disabled')
     max_move_dur_entry.config(state='disabled')
     capture_btn.config(state='disabled')
-    capture_pos_btn.config(state='disabled')
+    capture_zone_btn.config(state='disabled')
     save_btn.config(state='disabled')
     # Hide type-specific widgets
     key_label.grid_remove()
     key_entry.grid_remove()
     capture_btn.grid_remove()
-    x_label.grid_remove()
-    x_entry.grid_remove()
-    y_label.grid_remove()
-    y_entry.grid_remove()
-    capture_pos_btn.grid_remove()
+    min_x_label.grid_remove()
+    min_x_entry.grid_remove()
+    max_x_label.grid_remove()
+    max_x_entry.grid_remove()
+    min_y_label.grid_remove()
+    min_y_entry.grid_remove()
+    max_y_label.grid_remove()
+    max_y_entry.grid_remove()
+    capture_zone_btn.grid_remove()
     min_move_dur_label.grid_remove()
     min_move_dur_entry.grid_remove()
     max_move_dur_label.grid_remove()
@@ -580,17 +610,23 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            if 'x' in action:
-                del action['x']
-            if 'y' in action:
-                del action['y']
+            if 'min_x' in action:
+                del action['min_x']
+            if 'max_x' in action:
+                del action['max_x']
+            if 'min_y' in action:
+                del action['min_y']
+            if 'max_y' in action:
+                del action['max_y']
             if 'min_move_duration' in action:
                 del action['min_move_duration']
             if 'max_move_duration' in action:
                 del action['max_move_duration']
         elif new_type == 'mouse_move':
-            action['x'] = 0
-            action['y'] = 0
+            action['min_x'] = 0
+            action['max_x'] = 0
+            action['min_y'] = 0
+            action['max_y'] = 0
             action['min_move_duration'] = 0.5
             action['max_move_duration'] = 0.5
             if 'key' in action:
@@ -614,8 +650,16 @@ def save_changes():
                 raise ValueError("Min duration must be <= max duration and both non-negative.")
             action['min_move_duration'] = min_dur
             action['max_move_duration'] = max_dur
-            action['x'] = int(x_var.get())
-            action['y'] = int(y_var.get())
+            min_x = int(min_x_var.get())
+            max_x = int(max_x_var.get())
+            min_y = int(min_y_var.get())
+            max_y = int(max_y_var.get())
+            if min_x > max_x or min_y > max_y:
+                raise ValueError("Min X/Y must be <= Max X/Y.")
+            action['min_x'] = min_x
+            action['max_x'] = max_x
+            action['min_y'] = min_y
+            action['max_y'] = max_y
         elif action['type'] == 'key_action':
             action['key'] = key_var.get().strip()
             if not action['key']:
@@ -673,29 +717,66 @@ def capture_input():
     capture_listener_mouse.start()
     update_status("Press a key or mouse button to capture...")
 
-def capture_position():
-    def on_capture_click(x, y, button, pressed):
-        if pressed:
-            x_var.set(str(x))
-            y_var.set(str(y))
-            stop_capture()
-            update_status("Mouse position captured.")
-        return False
+def capture_zone():
+    global overlay, canvas
+    start_pos = [None]
+    drag_rect = [None]
+    trans_color = '#ab23ff'  # Unique transparent color
 
+    def on_capture_click(x, y, button, pressed):
+        if button == Button.left:
+            if pressed:
+                start_pos[0] = (x, y)
+                drag_rect[0] = None
+                update_status("Drag to select zone... Release to finish.")
+            else:
+                if start_pos[0]:
+                    end_x, end_y = x, y
+                    sx, sy = start_pos[0]
+                    min_x_var.set(str(min(sx, end_x)))
+                    max_x_var.set(str(max(sx, end_x)))
+                    min_y_var.set(str(min(sy, end_y)))
+                    max_y_var.set(str(max(sy, end_y)))
+                    update_status("Mouse zone captured.")
+                    stop_capture()
+                    return False
+        return True
+
+    def on_capture_move(x, y):
+        if start_pos[0] and canvas:
+            if drag_rect[0]:
+                canvas.delete(drag_rect[0])
+            sx, sy = start_pos[0]
+            drag_rect[0] = canvas.create_rectangle(sx, sy, x, y, outline='red', width=2, fill='')
+    
     def stop_capture():
-        global capture_listener_mouse
+        global capture_listener_mouse, overlay, canvas
         if capture_listener_mouse:
             capture_listener_mouse.stop()
             capture_listener_mouse = None
+        if overlay:
+            overlay.destroy()
+            overlay = None
+            canvas = None
 
-    global capture_listener_mouse
     stop_capture()
-    update_status("Click to capture position in 3 seconds...")
+    # Create transparent overlay
+    overlay = tk.Toplevel(root)
+    overlay.overrideredirect(True)
+    overlay.attributes('-topmost', True)
+    overlay.attributes('-transparentcolor', trans_color)
+    w = root.winfo_screenwidth()
+    h = root.winfo_screenheight()
+    overlay.geometry(f"{w}x{h}+0+0")
+    canvas = tk.Canvas(overlay, bg=trans_color, highlightthickness=0)
+    canvas.pack(fill=tk.BOTH, expand=True)
+
+    update_status("Hold left mouse and drag to select zone in 3 seconds...")
     root.update()
     time.sleep(3)
-    capture_listener_mouse = mouse.Listener(on_click=on_capture_click)
+    capture_listener_mouse = mouse.Listener(on_click=on_capture_click, on_move=on_capture_move)
     capture_listener_mouse.start()
-    update_status("Click to capture mouse position...")
+    update_status("Hold left mouse and drag to select zone...")
 
 def show_menu(event):
     menu.delete(0, tk.END)
@@ -903,8 +984,10 @@ editor_frame.pack(fill=tk.X)
 min_delay_var = tk.StringVar()
 max_delay_var = tk.StringVar()
 key_var = tk.StringVar()
-x_var = tk.StringVar()
-y_var = tk.StringVar()
+min_x_var = tk.StringVar()
+max_x_var = tk.StringVar()
+min_y_var = tk.StringVar()
+max_y_var = tk.StringVar()
 min_move_dur_var = tk.StringVar()
 max_move_dur_var = tk.StringVar()
 
@@ -935,16 +1018,24 @@ Tooltip(key_entry, "The key or button for this action.")
 capture_btn = ttk.Button(editor_frame, text="Capture Input", command=capture_input, state='disabled')
 Tooltip(capture_btn, "Capture a key or mouse button press.")
 
-x_label = ttk.Label(editor_frame, text="X Position:")
-x_entry = ttk.Entry(editor_frame, textvariable=x_var, state='disabled', width=15)
-Tooltip(x_entry, "X coordinate for mouse move.")
+min_x_label = ttk.Label(editor_frame, text="Min X:")
+min_x_entry = ttk.Entry(editor_frame, textvariable=min_x_var, state='disabled', width=15)
+Tooltip(min_x_entry, "Minimum X coordinate for mouse zone.")
 
-y_label = ttk.Label(editor_frame, text="Y Position:")
-y_entry = ttk.Entry(editor_frame, textvariable=y_var, state='disabled', width=15)
-Tooltip(y_entry, "Y coordinate for mouse move.")
+max_x_label = ttk.Label(editor_frame, text="Max X:")
+max_x_entry = ttk.Entry(editor_frame, textvariable=max_x_var, state='disabled', width=15)
+Tooltip(max_x_entry, "Maximum X coordinate for mouse zone.")
 
-capture_pos_btn = ttk.Button(editor_frame, text="Capture Position", command=capture_position, state='disabled')
-Tooltip(capture_pos_btn, "Capture current mouse position.")
+min_y_label = ttk.Label(editor_frame, text="Min Y:")
+min_y_entry = ttk.Entry(editor_frame, textvariable=min_y_var, state='disabled', width=15)
+Tooltip(min_y_entry, "Minimum Y coordinate for mouse zone.")
+
+max_y_label = ttk.Label(editor_frame, text="Max Y:")
+max_y_entry = ttk.Entry(editor_frame, textvariable=max_y_var, state='disabled', width=15)
+Tooltip(max_y_entry, "Maximum Y coordinate for mouse zone.")
+
+capture_zone_btn = ttk.Button(editor_frame, text="Capture Zone", command=capture_zone, state='disabled')
+Tooltip(capture_zone_btn, "Capture a mouse zone by dragging.")
 
 min_move_dur_label = ttk.Label(editor_frame, text="Min Move Dur (s):")
 min_move_dur_entry = ttk.Entry(editor_frame, textvariable=min_move_dur_var, state='disabled', width=15)
@@ -955,7 +1046,7 @@ max_move_dur_entry = ttk.Entry(editor_frame, textvariable=max_move_dur_var, stat
 Tooltip(max_move_dur_entry, "Maximum time to perform the mouse movement (randomized between min and max).")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
-save_btn.grid(row=4, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
+save_btn.grid(row=5, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
 Tooltip(save_btn, "Save edits to the selected action.")
 
 # Bindings
