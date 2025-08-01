@@ -112,7 +112,8 @@ playback_active = False  # Track playback state
 playback_thread = None  # Track playback thread
 hotkey_listener = None  # Global hotkey listener
 pressed_items = []  # List of (controller, key_or_button)
-repeat_count = 1  # Default repeat for playback
+repeat_mode = "Loops"  # Default repeat mode
+repeat_value = 1.0  # Default repeat value (loops or minutes)
 prev_target = None
 potential_source = None
 drag_initiated = False
@@ -142,10 +143,12 @@ class Tooltip:
 def update_tree():
     tree.delete(*tree.get_children())
     for idx, action in enumerate(actions):
-        delay = action['delay']
+        min_delay = action.get('min_delay', 0.0)
+        max_delay = action.get('max_delay', 0.0)
+        delay_str = f"{min_delay:.3f} - {max_delay:.3f}"
         details = get_action_details(action)
         tag = 'even' if idx % 2 == 0 else 'odd'
-        tree.insert("", tk.END, iid=str(idx), values=(f"{delay:.3f}", action['type'], details), tags=(tag,))
+        tree.insert("", tk.END, iid=str(idx), values=(delay_str, action['type'], details), tags=(tag,))
 
 def get_action_details(action):
     if action['type'] == 'key_action':
@@ -156,7 +159,10 @@ def get_action_details(action):
         else:
             return f"Press Key: {key}"
     elif action['type'] == 'mouse_move':
-        return f"Position: ({action.get('x', 0)}, {action.get('y', 0)}), Duration: {action.get('move_duration', 0.0):.3f}s"
+        min_dur = action.get('min_move_duration', 0.0)
+        max_dur = action.get('max_move_duration', 0.0)
+        dur_str = f"{min_dur:.3f} - {max_dur:.3f}"
+        return f"Position: ({action.get('x', 0)}, {action.get('y', 0)}), Duration: {dur_str}s"
     return ""
 
 def on_press(key):
@@ -179,12 +185,12 @@ def on_release(key):
 def on_move(x, y):
     if recording:
         timestamp = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': timestamp, 'move_duration': 0.0})
+        actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
 
 def on_click(x, y, button, pressed):
     if recording:
         ts = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': ts - 0.001, 'move_duration': 0.0})
+        actions.append({'type': 'mouse_move', 'x': x, 'y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
         button_key = f"mouse.{str(button).split('.')[-1]}"
         if pressed:
             press_times[button_key] = ts
@@ -244,10 +250,13 @@ def stop_recording():
     # Post-process actions
     if actions:
         actions.sort(key=lambda x: x['timestamp'])
-        actions[0]['delay'] = 0.0
+        actions[0]['min_delay'] = 0.0
+        actions[0]['max_delay'] = 0.0
         prev_ts = actions[0]['timestamp']
         for i in range(1, len(actions)):
-            actions[i]['delay'] = actions[i]['timestamp'] - prev_ts
+            delay = actions[i]['timestamp'] - prev_ts
+            actions[i]['min_delay'] = delay
+            actions[i]['max_delay'] = delay
             prev_ts = actions[i]['timestamp']
         # Remove timestamp
         for action in actions:
@@ -291,28 +300,21 @@ def save_macro():
         current_filename = filename
         messagebox.showinfo("Saved", f"Macro saved to {filename}")
 
-def precompute_playback():
-    # Precompute absolute times for exact timing
-    abs_time = 0.0
-    for action in actions:
-        abs_time += action['delay']
-        action['abs_time'] = abs_time
-    return actions  # Could precompute paths here if needed, but timings are handled in playback
-
 def playback_macro():
-    global playback_active, playback_thread, pressed_items, repeat_count
+    global playback_active, playback_thread, pressed_items, repeat_mode, repeat_value
     if not actions:
         messagebox.showwarning("No Actions", "No actions to playback.")
         return
     if recording:
         messagebox.showwarning("Recording Active", "Cannot play back while recording.")
         return
+    repeat_mode = mode_var.get()
     try:
-        repeat_count = int(repeat_var.get())
-        if repeat_count < 1:
+        repeat_value = float(repeat_var.get())
+        if repeat_value <= 0:
             raise ValueError
     except ValueError:
-        messagebox.showerror("Invalid Input", "Repeat count must be a positive integer.")
+        messagebox.showerror("Invalid Input", "Repeat value must be a positive number.")
         return
     playback_active = True
     pressed_items = []
@@ -321,24 +323,23 @@ def playback_macro():
         update_status("Warning: numpy not installed, mouse movements will be instant.")
     root.update()
     interruptible_sleep(3)
-    precompute_playback()  # Precompute before starting
     root.after(0, update_ui_for_playback)
 
     def run_playback():
         global playback_active
         playback_start = time.time()
-        for rep in range(repeat_count):
-            if not playback_active:
-                break
-            current_pos = mouse_controller.position
+        current_pos = mouse_controller.position
+        rep = 0
+        total_seconds = repeat_value * 60 if repeat_mode == "Minutes" else float('inf')
+        while playback_active:
             for action in actions:
                 if not playback_active:
                     break
-                # Use absolute time for precise timing (corrects any drift)
-                target_time = playback_start + action['abs_time'] + rep * total_duration()
-                sleep_duration = target_time - time.time()
-                if sleep_duration > 0:
-                    interruptible_sleep(sleep_duration)
+                if time.time() - playback_start >= total_seconds:
+                    playback_active = False
+                    break
+                delay = random.uniform(action.get('min_delay', 0.0), action.get('max_delay', 0.0))
+                interruptible_sleep(delay)
                 if not playback_active:
                     break
                 if action['type'] == 'key_action':
@@ -372,9 +373,14 @@ def playback_macro():
                         if (ctrl, itm) in pressed_items:
                             pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
-                    move_dur = action.get('move_duration', 0.0)
+                    move_dur = random.uniform(action.get('min_move_duration', 0.0), action.get('max_move_duration', 0.0))
                     human_move(current_pos[0], current_pos[1], action['x'], action['y'], move_dur, seed=hash((current_pos, (action['x'], action['y']))))
                     current_pos = (action['x'], action['y'])
+            rep += 1
+            if repeat_mode == "Loops" and rep >= repeat_value:
+                break
+            if time.time() - playback_start >= total_seconds:
+                break
         if playback_active:
             playback_active = False
             root.after(0, lambda: messagebox.showinfo("Finished", "Playback finished."))
@@ -385,14 +391,6 @@ def playback_macro():
     playback_thread = threading.Thread(target=run_playback)
     playback_thread.daemon = True
     playback_thread.start()
-
-def total_duration():
-    dur = 0.0
-    for action in actions:
-        dur += action['delay']
-        if action['type'] == 'mouse_move':
-            dur += action.get('move_duration', 0.0)
-    return dur
 
 def stop_playback():
     global playback_active, pressed_items
@@ -416,12 +414,14 @@ def update_ui_for_playback():
     if playback_active:
         start_stop_btn.config(text="Stop (F1)", style='RedButton.TButton')
         record_btn.config(state=tk.DISABLED)
-        repeat_spin.config(state=tk.DISABLED)
+        repeat_entry.config(state=tk.DISABLED)
+        mode_combo.config(state=tk.DISABLED)
         save_btn.config(state=tk.DISABLED)
     else:
         start_stop_btn.config(text="Start (F1)", style='GreenButton.TButton')
         record_btn.config(state=tk.NORMAL)
-        repeat_spin.config(state='normal')
+        repeat_entry.config(state='normal')
+        mode_combo.config(state='readonly')
         save_btn.config(state=tk.NORMAL)
 
 def hotkey_f1():
@@ -440,14 +440,15 @@ def hotkey_f3():
         pass
 
 def insert_action(action_type, after_iid=None):
-    new_action = {'type': action_type, 'delay': 0.1, 'move_duration': 0.0 if action_type == 'mouse_move' else 0.0}
+    new_action = {'type': action_type, 'min_delay': 0.1, 'max_delay': 0.1}
     
     if action_type == 'key_action':
         new_action['key'] = 'a'
     elif action_type == 'mouse_move':
         new_action['x'] = 0
         new_action['y'] = 0
-        new_action['move_duration'] = 0.5
+        new_action['min_move_duration'] = 0.5
+        new_action['max_move_duration'] = 0.5
     
     if after_iid is None:
         pos = len(actions)
@@ -487,15 +488,18 @@ def on_tree_select(event):
         clear_editor()
 
 def populate_editor(action):
-    delay_var.set(f"{action['delay']:.3f}")
+    min_delay_var.set(f"{action.get('min_delay', 0.0):.3f}")
+    max_delay_var.set(f"{action.get('max_delay', 0.0):.3f}")
     type_combo.set(action['type'])
-    delay_entry.config(state='normal')
+    min_delay_entry.config(state='normal')
+    max_delay_entry.config(state='normal')
     type_combo.config(state='readonly')
 
     key_var.set(action.get('key', ''))
     x_var.set(str(action.get('x', 0)))
     y_var.set(str(action.get('y', 0)))
-    move_dur_var.set(f"{action.get('move_duration', 0.0):.3f}")
+    min_move_dur_var.set(f"{action.get('min_move_duration', 0.0):.3f}")
+    max_move_dur_var.set(f"{action.get('max_move_duration', 0.0):.3f}")
 
     # Hide all type-specific widgets first
     key_label.grid_remove()
@@ -506,43 +510,52 @@ def populate_editor(action):
     y_label.grid_remove()
     y_entry.grid_remove()
     capture_pos_btn.grid_remove()
-    move_dur_label.grid_remove()
-    move_dur_entry.grid_remove()
+    min_move_dur_label.grid_remove()
+    min_move_dur_entry.grid_remove()
+    max_move_dur_label.grid_remove()
+    max_move_dur_entry.grid_remove()
 
     if action['type'] == 'key_action':
-        key_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
-        key_entry.grid(row=1, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
-        capture_btn.grid(row=1, column=4, padx=5, pady=5)
+        key_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        key_entry.grid(row=2, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        capture_btn.grid(row=2, column=4, padx=5, pady=5)
         key_entry.config(state='normal')
         capture_btn.config(state='normal')
     elif action['type'] == 'mouse_move':
-        x_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
-        x_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
-        y_label.grid(row=1, column=2, padx=5, pady=5, sticky=tk.E)
-        y_entry.grid(row=1, column=3, padx=5, pady=5, sticky=tk.W)
-        capture_pos_btn.grid(row=1, column=4, padx=5, pady=5)
-        move_dur_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
-        move_dur_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        x_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        x_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        y_label.grid(row=2, column=2, padx=5, pady=5, sticky=tk.E)
+        y_entry.grid(row=2, column=3, padx=5, pady=5, sticky=tk.W)
+        capture_pos_btn.grid(row=2, column=4, padx=5, pady=5)
+        min_move_dur_label.grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
+        min_move_dur_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+        max_move_dur_label.grid(row=3, column=2, padx=5, pady=5, sticky=tk.E)
+        max_move_dur_entry.grid(row=3, column=3, padx=5, pady=5, sticky=tk.W)
         x_entry.config(state='normal')
         y_entry.config(state='normal')
         capture_pos_btn.config(state='normal')
-        move_dur_entry.config(state='normal')
+        min_move_dur_entry.config(state='normal')
+        max_move_dur_entry.config(state='normal')
     
     save_btn.config(state='normal')
 
 def clear_editor():
-    delay_var.set('')
+    min_delay_var.set('')
+    max_delay_var.set('')
     type_combo.set('')
     key_var.set('')
     x_var.set('')
     y_var.set('')
-    move_dur_var.set('')
-    delay_entry.config(state='disabled')
+    min_move_dur_var.set('')
+    max_move_dur_var.set('')
+    min_delay_entry.config(state='disabled')
+    max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
     key_entry.config(state='disabled')
     x_entry.config(state='disabled')
     y_entry.config(state='disabled')
-    move_dur_entry.config(state='disabled')
+    min_move_dur_entry.config(state='disabled')
+    max_move_dur_entry.config(state='disabled')
     capture_btn.config(state='disabled')
     capture_pos_btn.config(state='disabled')
     save_btn.config(state='disabled')
@@ -555,24 +568,31 @@ def clear_editor():
     y_label.grid_remove()
     y_entry.grid_remove()
     capture_pos_btn.grid_remove()
-    move_dur_label.grid_remove()
-    move_dur_entry.grid_remove()
+    min_move_dur_label.grid_remove()
+    min_move_dur_entry.grid_remove()
+    max_move_dur_label.grid_remove()
+    max_move_dur_entry.grid_remove()
 
 def on_type_change(event):
     action = actions[selected_idx]
     new_type = type_combo.get()
     if new_type != action['type']:
         action['type'] = new_type
-        action['move_duration'] = 0.5 if new_type == 'mouse_move' else 0.0
         if new_type == 'key_action':
             action['key'] = 'a'
             if 'x' in action:
                 del action['x']
             if 'y' in action:
                 del action['y']
+            if 'min_move_duration' in action:
+                del action['min_move_duration']
+            if 'max_move_duration' in action:
+                del action['max_move_duration']
         elif new_type == 'mouse_move':
             action['x'] = 0
             action['y'] = 0
+            action['min_move_duration'] = 0.5
+            action['max_move_duration'] = 0.5
             if 'key' in action:
                 del action['key']
         populate_editor(action)
@@ -581,13 +601,19 @@ def on_type_change(event):
 def save_changes():
     action = actions[selected_idx]
     try:
-        action['delay'] = float(delay_var.get())
-        if action['delay'] < 0:
-            raise ValueError
+        min_delay = float(min_delay_var.get())
+        max_delay = float(max_delay_var.get())
+        if min_delay < 0 or max_delay < 0 or min_delay > max_delay:
+            raise ValueError("Min delay must be <= max delay and both non-negative.")
+        action['min_delay'] = min_delay
+        action['max_delay'] = max_delay
         if action['type'] == 'mouse_move':
-            action['move_duration'] = float(move_dur_var.get())
-            if action['move_duration'] < 0:
-                raise ValueError
+            min_dur = float(min_move_dur_var.get())
+            max_dur = float(max_move_dur_var.get())
+            if min_dur < 0 or max_dur < 0 or min_dur > max_dur:
+                raise ValueError("Min duration must be <= max duration and both non-negative.")
+            action['min_move_duration'] = min_dur
+            action['max_move_duration'] = max_dur
             action['x'] = int(x_var.get())
             action['y'] = int(y_var.get())
         elif action['type'] == 'key_action':
@@ -837,18 +863,22 @@ Tooltip(start_stop_btn, "Start the macro. Click or press F1 to stop when running
 
 repeat_label = ttk.Label(button_frame, text="Repeat:")
 repeat_label.grid(row=0, column=4, padx=5)
+mode_var = tk.StringVar(value="Loops")
+mode_combo = ttk.Combobox(button_frame, values=["Loops", "Minutes"], state='readonly', textvariable=mode_var, width=10)
+mode_combo.grid(row=0, column=5, padx=5)
+Tooltip(mode_combo, "Repeat mode: number of loops or total minutes to run.")
 repeat_var = tk.StringVar(value="1")
-repeat_spin = Spinbox(button_frame, from_=1, to=1000, textvariable=repeat_var, width=5)
-repeat_spin.grid(row=0, column=5, padx=5)
-Tooltip(repeat_spin, "Number of times to repeat the macro during playback.")
+repeat_entry = ttk.Entry(button_frame, textvariable=repeat_var, width=5)
+repeat_entry.grid(row=0, column=6, padx=5)
+Tooltip(repeat_entry, "Repeat value: number of loops or minutes depending on mode.")
 
 # Treeview for displaying actions
 columns = ("delay", "type", "details")
 tree = ttk.Treeview(root, columns=columns, show="headings", height=15, selectmode="extended")
-tree.heading("delay", text="Delay (s)")
+tree.heading("delay", text="Delay Range (s)")
 tree.heading("type", text="Action Type")
 tree.heading("details", text="Details")
-tree.column("delay", width=100)
+tree.column("delay", width=150)
 tree.column("type", width=150)
 tree.column("details", width=400)
 tree.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
@@ -870,28 +900,36 @@ editor_frame = ttk.Frame(editor_labelframe)
 editor_frame.pack(fill=tk.X)
 
 # Variables
-delay_var = tk.StringVar()
+min_delay_var = tk.StringVar()
+max_delay_var = tk.StringVar()
 key_var = tk.StringVar()
 x_var = tk.StringVar()
 y_var = tk.StringVar()
-move_dur_var = tk.StringVar()
+min_move_dur_var = tk.StringVar()
+max_move_dur_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
-delay_label = ttk.Label(editor_frame, text="Delay (seconds):")
-delay_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.E)
-delay_entry = ttk.Entry(editor_frame, textvariable=delay_var, state='disabled', width=15)
-delay_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
-Tooltip(delay_entry, "Time delay before this action starts.")
+min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
+min_delay_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.E)
+min_delay_entry = ttk.Entry(editor_frame, textvariable=min_delay_var, state='disabled', width=15)
+min_delay_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+Tooltip(min_delay_entry, "Minimum time delay before this action starts.")
+
+max_delay_label = ttk.Label(editor_frame, text="Max Delay (s):")
+max_delay_label.grid(row=0, column=2, padx=5, pady=5, sticky=tk.E)
+max_delay_entry = ttk.Entry(editor_frame, textvariable=max_delay_var, state='disabled', width=15)
+max_delay_entry.grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+Tooltip(max_delay_entry, "Maximum time delay before this action starts (randomized between min and max).")
 
 type_label = ttk.Label(editor_frame, text="Action Type:")
-type_label.grid(row=0, column=2, padx=5, pady=5, sticky=tk.E)
+type_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
 type_combo = ttk.Combobox(editor_frame, values=ACTION_TYPES, state='disabled', width=15)
-type_combo.grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+type_combo.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
 type_combo.bind("<<ComboboxSelected>>", on_type_change)
 Tooltip(type_combo, "Type of action: key press or mouse movement.")
 
 # Type-specific widgets (created but not gridded yet)
-key_label = ttk.Label(editor_frame, text="Key:")  # Added missing label
+key_label = ttk.Label(editor_frame, text="Key:")
 key_entry = ttk.Entry(editor_frame, textvariable=key_var, state='disabled', width=15)
 Tooltip(key_entry, "The key or button for this action.")
 capture_btn = ttk.Button(editor_frame, text="Capture Input", command=capture_input, state='disabled')
@@ -908,12 +946,16 @@ Tooltip(y_entry, "Y coordinate for mouse move.")
 capture_pos_btn = ttk.Button(editor_frame, text="Capture Position", command=capture_position, state='disabled')
 Tooltip(capture_pos_btn, "Capture current mouse position.")
 
-move_dur_label = ttk.Label(editor_frame, text="Move Duration (seconds):")
-move_dur_entry = ttk.Entry(editor_frame, textvariable=move_dur_var, state='disabled', width=15)
-Tooltip(move_dur_entry, "Time to perform the mouse movement (human-like if >0).")
+min_move_dur_label = ttk.Label(editor_frame, text="Min Move Dur (s):")
+min_move_dur_entry = ttk.Entry(editor_frame, textvariable=min_move_dur_var, state='disabled', width=15)
+Tooltip(min_move_dur_entry, "Minimum time to perform the mouse movement (human-like if >0).")
+
+max_move_dur_label = ttk.Label(editor_frame, text="Max Move Dur (s):")
+max_move_dur_entry = ttk.Entry(editor_frame, textvariable=max_move_dur_var, state='disabled', width=15)
+Tooltip(max_move_dur_entry, "Maximum time to perform the mouse movement (randomized between min and max).")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
-save_btn.grid(row=3, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
+save_btn.grid(row=4, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
 Tooltip(save_btn, "Save edits to the selected action.")
 
 # Bindings
