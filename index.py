@@ -156,8 +156,9 @@ def update_tree():
         max_delay = action.get('max_delay', 0.0)
         delay_str = f"{min_delay:.3f} - {max_delay:.3f}"
         details = get_action_details(action)
+        comment = action.get('comment', '')
         tag = 'even' if idx % 2 == 0 else 'odd'
-        tree.insert("", tk.END, iid=str(idx), values=(delay_str, action['type'], details), tags=(tag,))
+        tree.insert("", tk.END, iid=str(idx), values=(delay_str, action['type'], details, comment), tags=(tag,))
 
 def get_action_details(action):
     if action['type'] == 'key_action':
@@ -203,24 +204,24 @@ def on_release(key):
     if recording:
         key_str = str(key).replace("'", "") if hasattr(key, 'char') else str(key)
         timestamp = press_times.get(key_str, time.time() - start_time)
-        actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp})
+        actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp, 'comment': ''})
         press_times.pop(key_str, None)
 
 def on_move(x, y):
     if recording:
         timestamp = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
+        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
 
 def on_click(x, y, button, pressed):
     if recording:
         ts = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0})
+        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
         button_key = f"mouse.{str(button).split('.')[-1]}"
         if pressed:
             press_times[button_key] = ts
         else:
             timestamp = press_times.get(button_key, ts)
-            actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp})
+            actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp, 'comment': ''})
             press_times.pop(button_key, None)
 
 def start_recording():
@@ -499,7 +500,7 @@ def hotkey_f3():
         pass
 
 def insert_action(action_type, after_iid=None):
-    new_action = {'type': action_type, 'min_delay': 0.1, 'max_delay': 0.1}
+    new_action = {'type': action_type, 'min_delay': 0.1, 'max_delay': 0.1, 'comment': ''}
     
     if action_type == 'key_action':
         new_action['key'] = 'a'
@@ -577,6 +578,7 @@ def populate_editor(action):
     loop_name_var.set(action.get('name', ''))
     min_loops_var.set(str(action.get('min_loops', 1)))
     max_loops_var.set(str(action.get('max_loops', 1)))
+    comment_var.set(action.get('comment', ''))
 
     # Hide all type-specific widgets first
     key_label.grid_remove()
@@ -666,6 +668,11 @@ def populate_editor(action):
         loop_name_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
         loop_name_entry.config(state='normal')
     
+    # Show comment field (common to all types)
+    comment_label.grid(row=5, column=0, padx=5, pady=5, sticky=tk.E)
+    comment_entry.grid(row=5, column=1, columnspan=4, padx=5, pady=5, sticky=tk.W)
+    comment_entry.config(state='normal')
+    
     save_btn.config(state='normal')
 
 def clear_editor():
@@ -685,6 +692,7 @@ def clear_editor():
     loop_name_var.set('')
     min_loops_var.set('')
     max_loops_var.set('')
+    comment_var.set('')
     min_delay_entry.config(state='disabled')
     max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
@@ -701,6 +709,7 @@ def clear_editor():
     loop_name_entry.config(state='disabled')
     min_loops_entry.config(state='disabled')
     max_loops_entry.config(state='disabled')
+    comment_entry.config(state='disabled')
     capture_btn.config(state='disabled')
     capture_zone_btn.config(state='disabled')
     capture_on_click_btn.config(state='disabled')
@@ -737,6 +746,8 @@ def clear_editor():
     min_loops_entry.grid_remove()
     max_loops_label.grid_remove()
     max_loops_entry.grid_remove()
+    comment_label.grid_remove()
+    comment_entry.grid_remove()
 
 def on_type_change(event):
     action = actions[selected_idx]
@@ -838,6 +849,7 @@ def save_changes():
             if not name:
                 raise ValueError("Loop name cannot be empty.")
             action['name'] = name
+        action['comment'] = comment_var.get().strip()
     except ValueError as e:
         messagebox.showerror("Invalid Input", str(e) or "Invalid values entered.")
         return
@@ -1167,14 +1179,16 @@ repeat_entry.grid(row=0, column=6, padx=5)
 Tooltip(repeat_entry, "Repeat value: number of loops or minutes depending on mode.")
 
 # Treeview for displaying actions
-columns = ("delay", "type", "details")
+columns = ("delay", "type", "details", "comment")
 tree = ttk.Treeview(root, columns=columns, show="headings", height=15, selectmode="extended")
 tree.heading("delay", text="Delay Range (s)")
 tree.heading("type", text="Action Type")
 tree.heading("details", text="Details")
+tree.heading("comment", text="Comment")
 tree.column("delay", width=150)
 tree.column("type", width=150)
-tree.column("details", width=400)
+tree.column("details", width=300)
+tree.column("comment", width=200)
 tree.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
 tree.tag_configure('even', background='#f4f4f4')
 tree.tag_configure('odd', background='#ffffff')
@@ -1209,6 +1223,7 @@ check_y_var = tk.StringVar()
 loop_name_var = tk.StringVar()
 min_loops_var = tk.StringVar()
 max_loops_var = tk.StringVar()
+comment_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
@@ -1294,8 +1309,12 @@ max_loops_label = ttk.Label(editor_frame, text="Max Loops:")
 max_loops_entry = ttk.Entry(editor_frame, textvariable=max_loops_var, state='disabled', width=10)
 Tooltip(max_loops_entry, "Maximum number of loop iterations (random between min and max).")
 
+comment_label = ttk.Label(editor_frame, text="Comment:")
+comment_entry = ttk.Entry(editor_frame, textvariable=comment_var, state='disabled', width=50)
+Tooltip(comment_entry, "Optional comment to describe what this action does.")
+
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
-save_btn.grid(row=5, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
+save_btn.grid(row=6, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
 Tooltip(save_btn, "Save edits to the selected action.")
 
 # Bindings
