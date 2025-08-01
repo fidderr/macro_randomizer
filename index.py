@@ -133,6 +133,8 @@ preview_canvas = None
 sparse_recording = False
 last_ts = None
 copied_actions = []  # Clipboard for copied actions
+drag_start_pos = None  # For detecting drag during clicks in recording
+drag_rect = None
 
 # Controllers
 kb_controller = KeyboardController()
@@ -220,28 +222,77 @@ def on_move(x, y):
         timestamp = time.time() - start_time
         actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
 
+def on_move_sparse(x, y):
+    global drag_rect, overlay, canvas
+    if recording and sparse_recording and drag_start_pos:
+        if block_underlying_var.get():  # Only create/draw if block is on
+            if not overlay:
+                create_recording_overlay()
+            if canvas:
+                if drag_rect:
+                    canvas.delete(drag_rect)
+                sx, sy = drag_start_pos
+                drag_rect = canvas.create_rectangle(sx, sy, x, y, outline='red', width=2)
+
 def on_click(x, y, button, pressed):
+    global drag_start_pos, drag_rect
     if recording:
         ts = time.time() - start_time
         button_key = f"mouse.{str(button).split('.')[-1]}"
         if pressed:
-            if sparse_recording:
-                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
-                press_times[button_key] = ts
-            else:
-                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
-                press_times[button_key] = ts
-        else:
+            drag_start_pos = (x, y)
+            drag_rect = None
+            press_times[button_key] = ts
             if not sparse_recording:
+                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+        else:
+            if sparse_recording:
+                min_x = x
+                max_x = x
+                min_y = y
+                max_y = y
+                if drag_start_pos:
+                    dx = abs(x - drag_start_pos[0])
+                    dy = abs(y - drag_start_pos[1])
+                    if dx > 10 or dy > 10:  # Threshold to detect intentional drag for zone
+                        min_x = min(drag_start_pos[0], x)
+                        max_x = max(drag_start_pos[0], x)
+                        min_y = min(drag_start_pos[1], y)
+                        max_y = max(drag_start_pos[1], y)
+                actions.append({'type': 'mouse_move', 'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'timestamp': press_times[button_key], 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+            else:
                 actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
             timestamp = press_times.get(button_key, ts)
             actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp, 'comment': ''})
             press_times.pop(button_key, None)
             if sparse_recording:
                 last_ts = ts
+            if sparse_recording and overlay:
+                destroy_recording_overlay()
+            drag_start_pos = None
+
+def create_recording_overlay():
+    global overlay, canvas
+    overlay = tk.Toplevel(root)
+    overlay.overrideredirect(True)
+    overlay.attributes('-topmost', True)
+    overlay.attributes('-alpha', 0.3)  # Always dim when created
+    w = root.winfo_screenwidth()
+    h = root.winfo_screenheight()
+    overlay.geometry(f"{w}x{h}+0+0")
+    canvas = tk.Canvas(overlay, bg='black', highlightthickness=0)
+    canvas.pack(fill=tk.BOTH, expand=True)
+
+def destroy_recording_overlay():
+    global overlay, canvas, drag_rect
+    if overlay:
+        overlay.destroy()
+        overlay = None
+        canvas = None
+        drag_rect = None
 
 def start_recording():
-    global actions, start_time, recording, listeners, press_times, sparse_recording, last_ts
+    global actions, start_time, recording, listeners, press_times, sparse_recording, last_ts, drag_start_pos, overlay, canvas, drag_rect
     if recording:
         messagebox.showwarning("Already Recording", "Recording is already in progress.")
         return
@@ -260,6 +311,10 @@ def start_recording():
     time.sleep(3)
     actions = []  # Reset for new recording
     press_times = {}
+    drag_start_pos = None
+    overlay = None
+    canvas = None
+    drag_rect = None
     start_time = time.time()
     sparse_recording = sparse_var.get()
     if sparse_recording:
@@ -272,7 +327,10 @@ def start_recording():
     record_btn.config(text="Stop Recording (F3)", command=stop_recording, state=tk.NORMAL)
 
     kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    mouse_listener = mouse.Listener(on_move=on_move if not sparse_recording else None, on_click=on_click)
+    if sparse_recording:
+        mouse_listener = mouse.Listener(on_move=on_move_sparse, on_click=on_click)
+    else:
+        mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click)
 
     kb_listener.start()
     mouse_listener.start()
@@ -281,7 +339,7 @@ def start_recording():
     listeners['mouse'] = mouse_listener
 
 def stop_recording():
-    global recording, listeners
+    global recording, listeners, overlay, canvas, drag_rect
     recording = False
     if 'kb' in listeners:
         listeners['kb'].stop()
@@ -289,6 +347,8 @@ def stop_recording():
     if 'mouse' in listeners:
         listeners['mouse'].stop()
         del listeners['mouse']
+    if overlay:
+        destroy_recording_overlay()
     update_status("Recording stopped.")
     status_label.config(background='#f0f0f0', foreground='black')
     record_btn.config(text="Record (F3)", command=start_recording, state=tk.NORMAL)
@@ -296,6 +356,13 @@ def stop_recording():
     # Post-process actions
     if actions:
         actions.sort(key=lambda x: x['timestamp'])
+        duration_extra = 0.0
+        try:
+            duration_extra = float(duration_extra_var.get())
+            if duration_extra < 0:
+                duration_extra = 0.0
+        except ValueError:
+            pass
         if sparse_recording:
             prev_ts = 0.0
             for action in actions:
@@ -305,7 +372,7 @@ def stop_recording():
                     action['min_delay'] = 0.0
                     action['max_delay'] = 0.0
                     action['min_move_duration'] = d
-                    action['max_move_duration'] = d
+                    action['max_move_duration'] = d + duration_extra
                 else:
                     action['min_delay'] = 0.0
                     action['max_delay'] = 0.0
@@ -1042,11 +1109,11 @@ def capture_zone():
         return True
 
     def on_capture_move(x, y):
-        if start_pos[0] and canvas:
+        if start_pos[0] and canvas:  # Only draw if canvas exists (i.e., block on)
             if drag_rect[0]:
                 canvas.delete(drag_rect[0])
             sx, sy = start_pos[0]
-            drag_rect[0] = canvas.create_rectangle(sx, sy, x, y, outline='red', width=2, fill='')
+            drag_rect[0] = canvas.create_rectangle(sx, sy, x, y, outline='red', width=2)
 
     def stop_capture():
         global capture_listener_mouse, overlay, canvas
@@ -1062,21 +1129,20 @@ def capture_zone():
     update_status("Hold left mouse and drag to select zone in 3 seconds...")
     root.update()
     time.sleep(3)
-    # Create overlay after sleep
-    overlay = tk.Toplevel(root)
-    overlay.overrideredirect(True)
-    overlay.attributes('-topmost', True)
-    w = root.winfo_screenwidth()
-    h = root.winfo_screenheight()
-    overlay.geometry(f"{w}x{h}+0+0")
+    # Only create overlay if block is on (dim with feedback); else, no overlay/no feedback
     if block_underlying_var.get():
+        overlay = tk.Toplevel(root)
+        overlay.overrideredirect(True)
+        overlay.attributes('-topmost', True)
         overlay.attributes('-alpha', 0.3)
+        w = root.winfo_screenwidth()
+        h = root.winfo_screenheight()
+        overlay.geometry(f"{w}x{h}+0+0")
         canvas = tk.Canvas(overlay, bg='black', highlightthickness=0)
+        canvas.pack(fill=tk.BOTH, expand=True)
     else:
-        trans_color = '#ab23ff'
-        overlay.attributes('-transparentcolor', trans_color)
-        canvas = tk.Canvas(overlay, bg=trans_color, highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True)
+        overlay = None
+        canvas = None
     capture_listener_mouse = mouse.Listener(on_click=on_capture_click, on_move=on_capture_move)
     capture_listener_mouse.start()
     update_status("Hold left mouse and drag to select zone...")
@@ -1294,28 +1360,35 @@ Tooltip(record_btn, "Start recording mouse and keyboard actions. Press Esc to st
 
 sparse_var = tk.BooleanVar(value=False)
 sparse_check = ttk.Checkbutton(button_frame, text="Sparse Recording", variable=sparse_var)
-sparse_check.grid(row=0, column=1, padx=5)
-Tooltip(sparse_check, "Optional: Only record mouse positions at clicks, setting move duration to time between clicks.")
+sparse_check.grid(row=0, column=3, padx=5)
+Tooltip(sparse_check, "Optional: Only record mouse positions at clicks, setting move duration to time between clicks. Dragging while clicking defines a random zone for the click location with visual red outline feedback. Use Dur Extra to add randomness to max duration.")
 
 block_underlying_var = tk.BooleanVar(value=True)
 block_check = ttk.Checkbutton(button_frame, text="Block During Capture", variable=block_underlying_var)
-block_check.grid(row=0, column=2, padx=5)
-Tooltip(block_check, "Dims the screen during zone capture to prevent unintended interactions with underlying applications.")
+block_check.grid(row=0, column=4, padx=5)
+Tooltip(block_check, "Use a dim overlay during zone capture for visual feedback and to prevent unintended interactions with underlying applications.")
 
 start_stop_btn = ttk.Button(button_frame, text="Start (F1)", command=toggle_playback, style='GreenButton.TButton')
-start_stop_btn.grid(row=0, column=3, padx=5)
+start_stop_btn.grid(row=0, column=5, padx=5)
 Tooltip(start_stop_btn, "Start the macro. Click or press F1 to stop when running.")
 
 repeat_label = ttk.Label(button_frame, text="Repeat:")
-repeat_label.grid(row=0, column=4, padx=5)
+repeat_label.grid(row=0, column=6, padx=5)
 mode_var = tk.StringVar(value="Loops")
 mode_combo = ttk.Combobox(button_frame, values=["Loops", "Minutes"], state='readonly', textvariable=mode_var, width=10)
-mode_combo.grid(row=0, column=5, padx=5)
+mode_combo.grid(row=0, column=7, padx=5)
 Tooltip(mode_combo, "Repeat mode: number of loops or total minutes to run.")
 repeat_var = tk.StringVar(value="1")
 repeat_entry = ttk.Entry(button_frame, textvariable=repeat_var, width=5)
-repeat_entry.grid(row=0, column=6, padx=5)
+repeat_entry.grid(row=0, column=8, padx=5)
 Tooltip(repeat_entry, "Repeat value: number of loops or minutes depending on mode.")
+
+duration_extra_label = ttk.Label(button_frame, text="Dur Extra (s):")
+duration_extra_label.grid(row=0, column=1, padx=5)
+duration_extra_var = tk.StringVar(value="0.0")
+duration_extra_entry = ttk.Entry(button_frame, textvariable=duration_extra_var, width=5)
+duration_extra_entry.grid(row=0, column=2, padx=5)
+Tooltip(duration_extra_entry, "Extra duration added to max move duration in sparse recording (min = recorded duration, max = recorded + extra).")
 
 # Treeview for displaying actions
 columns = ("delay", "type", "details", "comment")
@@ -1332,7 +1405,7 @@ tree.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
 tree.tag_configure('even', background='#f4f4f4')
 tree.tag_configure('odd', background='#ffffff')
 tree.tag_configure('drop_target', background='lightblue')
-Tooltip(tree, "List of actions. Right-click to add/insert/delete. Drag to reorder.")
+Tooltip(tree, "List of actions. Right-click to add/insert/delete. Drag to reorder. Select to edit.")
 
 # Scrollbar for treeview
 scrollbar = ttk.Scrollbar(root, orient="vertical", command=tree.yview)
