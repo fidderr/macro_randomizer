@@ -8,6 +8,7 @@ from pynput.keyboard import Controller as KeyboardController, Key
 from pynput.keyboard import GlobalHotKeys
 from pynput.mouse import Controller as MouseController, Button
 import random  # For seeding randomness
+import copy
 
 # Attempt to import numpy, set flag if unavailable
 try:
@@ -131,6 +132,7 @@ preview_overlay = None
 preview_canvas = None
 sparse_recording = False
 last_ts = None
+copied_actions = []  # Clipboard for copied actions
 
 # Controllers
 kb_controller = KeyboardController()
@@ -534,7 +536,7 @@ def hotkey_f3():
         pass
 
 def insert_action(action_type, after_iid=None):
-    new_action = {'type': action_type, 'min_delay': 0.1, 'max_delay': 0.1, 'comment': ''}
+    new_action = {'type': action_type, 'min_delay': 0.1, 'max_delay': 0.3, 'comment': ''}
     
     if action_type == 'key_action':
         new_action['key'] = 'a'
@@ -543,7 +545,7 @@ def insert_action(action_type, after_iid=None):
         new_action['max_x'] = 0
         new_action['min_y'] = 0
         new_action['max_y'] = 0
-        new_action['min_move_duration'] = 0.5
+        new_action['min_move_duration'] = 0.2
         new_action['max_move_duration'] = 0.5
     elif action_type == 'color_check':
         new_action['expected_color'] = '#ffffff'  # Default white
@@ -574,6 +576,46 @@ def delete_selected():
     update_tree()
     update_status("Action(s) deleted.")
     clear_editor()
+
+def copy_selected():
+    global copied_actions
+    selected = tree.selection()
+    if not selected:
+        return
+    indices = sorted([int(sel) for sel in selected])
+    copied_actions = copy.deepcopy([actions[i] for i in indices])
+    update_status("Selected actions copied.")
+
+def paste_after(after_iid):
+    global copied_actions
+    if not copied_actions:
+        return
+    pos = int(after_iid) + 1
+    for act in copied_actions:
+        actions.insert(pos, copy.deepcopy(act))
+        pos += 1
+    update_tree()
+    update_status("Actions pasted.")
+
+def paste_at_end():
+    global copied_actions
+    if not copied_actions:
+        return
+    for act in copied_actions:
+        actions.append(copy.deepcopy(act))
+    update_tree()
+    update_status("Actions pasted at end.")
+
+def paste_smart():
+    global copied_actions
+    if not copied_actions:
+        return
+    selected = tree.selection()
+    if selected:
+        last = max([int(s) for s in selected])
+        paste_after(str(last))
+    else:
+        paste_at_end()
 
 def update_status(text):
     status_label.config(text=text)
@@ -1082,19 +1124,24 @@ def show_menu(event):
         if row not in tree.selection():
             tree.selection_set(row)
         selected = tree.selection()
-        if len(selected) > 1:
-            menu.add_command(label="Delete", command=delete_selected)
-        else:
-            add_menu = tk.Menu(menu, tearoff=0)
-            for act_type in ACTION_TYPES:
-                add_menu.add_command(label=act_type, command=lambda t=act_type: insert_action(t, after_iid=row))
-            menu.add_cascade(label="Insert Below", menu=add_menu)
-            menu.add_command(label="Delete", command=delete_selected)
+        add_menu = tk.Menu(menu, tearoff=0)
+        for act_type in ACTION_TYPES:
+            add_menu.add_command(label=act_type, command=lambda t=act_type: insert_action(t, after_iid=row))
+        menu.add_cascade(label="Insert Below", menu=add_menu)
+        menu.add_command(label="Delete", command=delete_selected)
+        menu.add_separator()
+        if selected:
+            menu.add_command(label="Copy Selected", command=copy_selected)
+        if copied_actions:
+            menu.add_command(label="Paste After", command=lambda: paste_after(row))
     else:
         add_menu = tk.Menu(menu, tearoff=0)
         for act_type in ACTION_TYPES:
             add_menu.add_command(label=act_type, command=lambda t=act_type: insert_action(t, after_iid=None))
         menu.add_cascade(label="Add Action", menu=add_menu)
+        if copied_actions:
+            menu.add_separator()
+            menu.add_command(label="Paste at End", command=paste_at_end)
     menu.post(event.x_root, event.y_root)
 
 def on_b1_motion(event):
@@ -1210,13 +1257,20 @@ file_menu.add_command(label="New Macro", command=new_macro, accelerator="Ctrl+N"
 file_menu.add_command(label="Load Macro", command=load_macro, accelerator="Ctrl+O")
 file_menu.add_command(label="Save Macro", command=save_macro, accelerator="Ctrl+S")
 menubar.add_cascade(label="File", menu=file_menu)
-
+edit_menu = Menu(menubar, tearoff=0)
+edit_menu.add_command(label="Copy", command=copy_selected, accelerator="Ctrl+C")
+edit_menu.add_command(label="Paste", command=paste_smart, accelerator="Ctrl+V")
+edit_menu.add_command(label="Delete", command=delete_selected, accelerator="Del")
+menubar.add_cascade(label="Edit", menu=edit_menu)
 root.config(menu=menubar)
 
 # Bind keyboard shortcuts
 root.bind("<Control-n>", lambda e: new_macro())
 root.bind("<Control-o>", lambda e: load_macro())
 root.bind("<Control-s>", lambda e: save_macro())
+root.bind("<Control-c>", lambda e: copy_selected())
+root.bind("<Control-v>", lambda e: paste_smart())
+root.bind("<Delete>", lambda e: delete_selected())
 
 # Status label
 status_label = ttk.Label(root, text="Ready")
