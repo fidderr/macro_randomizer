@@ -101,9 +101,16 @@ def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
         interruptible_sleep(step_time)
 
 def interruptible_sleep(duration):
+    if duration <= 0:
+        return
     start = time.time()
-    while time.time() - start < duration and playback_active:
-        time.sleep(0.001)  # Smaller sleep for more precise interruption and less CPU usage
+    end_time = start + duration
+    if duration < 0.01:  # Use busy wait for small durations to avoid sleep resolution issues
+        while time.time() < end_time and playback_active:
+            pass
+    else:
+        while time.time() < end_time and playback_active:
+            time.sleep(min(0.001, end_time - time.time()))
 
 # Global variables
 actions = []  # List to store recorded/edited actions
