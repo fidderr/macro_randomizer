@@ -127,6 +127,8 @@ drag_initiated = False
 press_y = 0
 overlay = None
 canvas = None
+preview_overlay = None
+preview_canvas = None
 
 # Controllers
 kb_controller = KeyboardController()
@@ -544,15 +546,46 @@ def delete_selected():
 def update_status(text):
     status_label.config(text=text)
 
+def hide_preview():
+    global preview_overlay, preview_canvas
+    if preview_overlay:
+        preview_overlay.destroy()
+        preview_overlay = None
+        preview_canvas = None
+
+def show_preview(min_x, max_x, min_y, max_y):
+    global preview_overlay, preview_canvas
+    hide_preview()
+    trans_color = '#ab23ff'  # Unique transparent color
+    preview_overlay = tk.Toplevel(root)
+    preview_overlay.overrideredirect(True)
+    preview_overlay.attributes('-topmost', True)
+    preview_overlay.attributes('-transparentcolor', trans_color)
+    w = root.winfo_screenwidth()
+    h = root.winfo_screenheight()
+    preview_overlay.geometry(f"{w}x{h}+0+0")
+    preview_canvas = tk.Canvas(preview_overlay, bg=trans_color, highlightthickness=0)
+    preview_canvas.pack(fill=tk.BOTH, expand=True)
+
+    # Draw the zone
+    if min_x == max_x and min_y == max_y:
+        # Draw a cross for single point
+        half = 10
+        preview_canvas.create_line(min_x - half, min_y, min_x + half, min_y, fill='red', width=2)
+        preview_canvas.create_line(min_x, min_y - half, min_x, min_y + half, fill='red', width=2)
+    else:
+        preview_canvas.create_rectangle(min_x, min_y, max_x, max_y, outline='red', width=2)
+
+    preview_canvas.bind("<Button-1>", lambda e: hide_preview())
+
 def on_tree_select(event):
-    # Always hide the editor frame first
     editor_labelframe.pack_forget()
+    hide_preview()
     selected = tree.selection()
     if len(selected) == 1:
         global selected_idx
         selected_idx = int(selected[0])
         populate_editor(actions[selected_idx])
-        # Repack the frame only when a single row is selected
         editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
     else:
         clear_editor()
@@ -639,6 +672,8 @@ def populate_editor(action):
         capture_zone_btn.config(state='normal')
         min_move_dur_entry.config(state='normal')
         max_move_dur_entry.config(state='normal')
+        show_preview(action['min_x'], action['max_x'], action['min_y'], action['max_y'])
+        update_status("Previewing mouse zone. Click on the preview to close.")
     elif action['type'] == 'color_check':
         hex_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
         hex_entry.grid(row=2, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
@@ -748,6 +783,7 @@ def clear_editor():
     max_loops_entry.grid_remove()
     comment_label.grid_remove()
     comment_entry.grid_remove()
+    hide_preview()
 
 def on_type_change(event):
     action = actions[selected_idx]
@@ -854,6 +890,10 @@ def save_changes():
         messagebox.showerror("Invalid Input", str(e) or "Invalid values entered.")
         return
     update_tree()
+    tree.selection_set(str(selected_idx))
+    if action['type'] == 'mouse_move':
+        hide_preview()
+        show_preview(action['min_x'], action['max_x'], action['min_y'], action['max_y'])
     update_status("Changes saved.")
 
 def capture_input():
