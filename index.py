@@ -775,13 +775,6 @@ def on_button_release(event):
         tree.selection_set(str(new_pos))
         update_status("Action moved.")
     else:
-        row = tree.identify_row(event.y)
-        if row:
-            current_selection = tree.selection()
-            if len(current_selection) == 1 and current_selection[0] == row:
-                tree.selection_remove(row)
-            else:
-                tree.selection_set(row)
         update_status("Ready")
 
 # GUI setup
