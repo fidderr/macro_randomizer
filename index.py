@@ -362,7 +362,6 @@ def playback_macro():
             i = 0
             while i < len(actions) and playback_active:
                 if time.time() - playback_start >= total_seconds:
-                    playback_active = False
                     break
                 action = actions[i]
                 delay = random.uniform(action.get('min_delay', 0.0), action.get('max_delay', 0.0))
