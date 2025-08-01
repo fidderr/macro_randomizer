@@ -112,6 +112,10 @@ playback_thread = None  # Track playback thread
 hotkey_listener = None  # Global hotkey listener
 pressed_items = []  # List of (controller, key_or_button)
 repeat_count = 1  # Default repeat for playback
+prev_target = None
+potential_source = None
+drag_initiated = False
+press_y = 0
 
 # Controllers
 kb_controller = KeyboardController()
@@ -444,6 +448,7 @@ def insert_action(action_type, after_iid=None):
         pos = int(after_iid) + 1
         actions.insert(pos, new_action)
     update_tree()
+    tree.selection_set(str(pos))  # Automatically select the new row
     update_status("Action added. Select to edit.")
 
 def delete_selected():
@@ -461,37 +466,57 @@ def update_status(text):
     status_label.config(text=text)
 
 def on_tree_select(event):
+    # Always hide the editor frame first
+    editor_labelframe.pack_forget()
     selected = tree.selection()
     if len(selected) == 1:
         global selected_idx
         selected_idx = int(selected[0])
         populate_editor(actions[selected_idx])
+        # Repack the frame only when a single row is selected
+        editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
     else:
         clear_editor()
 
 def populate_editor(action):
     delay_var.set(f"{action['delay']:.3f}")
     type_combo.set(action['type'])
-    type_combo.config(state='readonly')
     delay_entry.config(state='normal')
-    
+    type_combo.config(state='readonly')
+
     key_var.set(action.get('key', ''))
     x_var.set(str(action.get('x', 0)))
     y_var.set(str(action.get('y', 0)))
     move_dur_var.set(f"{action.get('move_duration', 0.0):.3f}")
-    
+
+    # Hide all type-specific widgets first
+    key_label.grid_remove()
+    key_entry.grid_remove()
+    capture_btn.grid_remove()
+    x_label.grid_remove()
+    x_entry.grid_remove()
+    y_label.grid_remove()
+    y_entry.grid_remove()
+    capture_pos_btn.grid_remove()
+    move_dur_label.grid_remove()
+    move_dur_entry.grid_remove()
+
     if action['type'] == 'key_action':
+        key_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
+        key_entry.grid(row=1, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        capture_btn.grid(row=1, column=4, padx=5, pady=5)
         key_entry.config(state='normal')
-        x_entry.config(state='disabled')
-        y_entry.config(state='disabled')
         capture_btn.config(state='normal')
-        capture_pos_btn.config(state='disabled')
-        move_dur_entry.config(state='disabled')
     elif action['type'] == 'mouse_move':
-        key_entry.config(state='disabled')
+        x_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
+        x_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        y_label.grid(row=1, column=2, padx=5, pady=5, sticky=tk.E)
+        y_entry.grid(row=1, column=3, padx=5, pady=5, sticky=tk.W)
+        capture_pos_btn.grid(row=1, column=4, padx=5, pady=5)
+        move_dur_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        move_dur_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
         x_entry.config(state='normal')
         y_entry.config(state='normal')
-        capture_btn.config(state='disabled')
         capture_pos_btn.config(state='normal')
         move_dur_entry.config(state='normal')
     
@@ -513,6 +538,17 @@ def clear_editor():
     capture_btn.config(state='disabled')
     capture_pos_btn.config(state='disabled')
     save_btn.config(state='disabled')
+    # Hide type-specific widgets
+    key_label.grid_remove()
+    key_entry.grid_remove()
+    capture_btn.grid_remove()
+    x_label.grid_remove()
+    x_entry.grid_remove()
+    y_label.grid_remove()
+    y_entry.grid_remove()
+    capture_pos_btn.grid_remove()
+    move_dur_label.grid_remove()
+    move_dur_entry.grid_remove()
 
 def on_type_change(event):
     action = actions[selected_idx]
@@ -631,12 +667,17 @@ def show_menu(event):
     menu.delete(0, tk.END)
     row = tree.identify_row(event.y)
     if row:
-        tree.selection_set(row)
-        add_menu = tk.Menu(menu, tearoff=0)
-        for act_type in ACTION_TYPES:
-            add_menu.add_command(label=act_type, command=lambda t=act_type: insert_action(t, after_iid=row))
-        menu.add_cascade(label="Insert Below", menu=add_menu)
-        menu.add_command(label="Delete", command=delete_selected)
+        if row not in tree.selection():
+            tree.selection_set(row)
+        selected = tree.selection()
+        if len(selected) > 1:
+            menu.add_command(label="Delete", command=delete_selected)
+        else:
+            add_menu = tk.Menu(menu, tearoff=0)
+            for act_type in ACTION_TYPES:
+                add_menu.add_command(label=act_type, command=lambda t=act_type: insert_action(t, after_iid=row))
+            menu.add_cascade(label="Insert Below", menu=add_menu)
+            menu.add_command(label="Delete", command=delete_selected)
     else:
         add_menu = tk.Menu(menu, tearoff=0)
         for act_type in ACTION_TYPES:
@@ -644,38 +685,98 @@ def show_menu(event):
         menu.add_cascade(label="Add Action", menu=add_menu)
     menu.post(event.x_root, event.y_root)
 
+def on_b1_motion(event):
+    global drag_initiated, prev_target
+    if not drag_initiated:
+        if abs(event.y - press_y) > 5:
+            drag_initiated = True
+            row = potential_source
+            tree.selection_set(row)
+            drag_data["source"] = row
+            tree.config(cursor="exchange")
+            update_status("Dragging row...")
+    if drag_initiated:
+        target = tree.identify_row(event.y)
+        if target != prev_target:
+            if prev_target:
+                current_tags = tree.item(prev_target, "tags")
+                current_tags = tuple(t for t in current_tags if t != "drop_target")
+                tree.item(prev_target, tags=current_tags)
+            if target and target != drag_data["source"]:
+                current_tags = tree.item(target, "tags")
+                tree.item(target, tags=current_tags + ("drop_target",))
+            prev_target = target
+        if target:
+            bbox = tree.bbox(target)
+            if bbox:
+                half = bbox[3] / 2
+                rel_y = event.y - bbox[1]
+                position = "after" if rel_y > half else "before"
+                update_status(f"Will insert {position} this row")
+        else:
+            update_status("Will append to end")
+
 def on_button_press(event):
+    global potential_source, drag_initiated, press_y
     row = tree.identify_row(event.y)
     if row:
-        drag_data["source"] = row
-        tree.config(cursor="exchange")
-        update_status("Dragging row...")
+        potential_source = row
+        drag_initiated = False
+        press_y = event.y
+        tree.bind("<B1-Motion>", on_b1_motion)
 
 def on_button_release(event):
+    global prev_target
+    tree.unbind("<B1-Motion>")
     tree.config(cursor="")
-    source = drag_data["source"]
-    if not source:
-        return
-    drag_data["source"] = None
-    target = tree.identify_row(event.y)
-    if not target:
-        children = tree.get_children()
-        if children:
-            target = children[-1]
-        else:
+    if prev_target:
+        current_tags = tree.item(prev_target, "tags")
+        current_tags = tuple(t for t in current_tags if t != "drop_target")
+        tree.item(prev_target, tags=current_tags)
+        prev_target = None
+    if drag_initiated:
+        source = drag_data["source"]
+        drag_data["source"] = None
+        target = tree.identify_row(event.y)
+        if target == source or not source:
+            update_status("Ready")
             return
-    if target == source:
-        return
-    
-    source_idx = int(source)
-    target_idx = int(target)
-    action = actions.pop(source_idx)
-    if source_idx < target_idx:
-        actions.insert(target_idx, action)
+        insert_after = True
+        target_idx = None
+        if target:
+            target_idx = int(target)
+            bbox = tree.bbox(target)
+            if bbox:
+                half = bbox[3] / 2
+                rel_y = event.y - bbox[1]
+                insert_after = rel_y > half
+        else:
+            action = actions.pop(int(source))
+            actions.append(action)
+            new_pos = len(actions) - 1
+            update_tree()
+            tree.selection_set(str(new_pos))
+            update_status("Action moved.")
+            return
+        source_idx = int(source)
+        action = actions.pop(source_idx)
+        if source_idx < target_idx:
+            target_idx -= 1
+        insert_pos = target_idx + 1 if insert_after else target_idx
+        actions.insert(insert_pos, action)
+        new_pos = insert_pos
+        update_tree()
+        tree.selection_set(str(new_pos))
+        update_status("Action moved.")
     else:
-        actions.insert(target_idx + 1, action)
-    update_tree()
-    update_status("Action moved.")
+        row = tree.identify_row(event.y)
+        if row:
+            current_selection = tree.selection()
+            if len(current_selection) == 1 and current_selection[0] == row:
+                tree.selection_remove(row)
+            else:
+                tree.selection_set(row)
+        update_status("Ready")
 
 # GUI setup
 root = tk.Tk()
@@ -767,6 +868,7 @@ tree.column("details", width=400)
 tree.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
 tree.tag_configure('even', background='#f4f4f4')
 tree.tag_configure('odd', background='#ffffff')
+tree.tag_configure('drop_target', background='lightblue')
 Tooltip(tree, "List of actions. Right-click to add/insert/delete. Drag to reorder.")
 
 # Scrollbar for treeview
@@ -776,7 +878,7 @@ scrollbar.pack(side="right", fill="y")
 
 # Editor frame
 editor_labelframe = ttk.LabelFrame(root, text="Edit Selected Action", padding=10)
-editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
+# Note: We pack this dynamically in on_tree_select, so no initial pack here
 
 editor_frame = ttk.Frame(editor_labelframe)
 editor_frame.pack(fill=tk.X)
@@ -788,7 +890,7 @@ x_var = tk.StringVar()
 y_var = tk.StringVar()
 move_dur_var = tk.StringVar()
 
-# Fields with tooltips
+# Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 delay_label = ttk.Label(editor_frame, text="Delay (seconds):")
 delay_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.E)
 delay_entry = ttk.Entry(editor_frame, textvariable=delay_var, state='disabled', width=15)
@@ -796,43 +898,36 @@ delay_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
 Tooltip(delay_entry, "Time delay before this action starts.")
 
 type_label = ttk.Label(editor_frame, text="Action Type:")
-type_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
+type_label.grid(row=0, column=2, padx=5, pady=5, sticky=tk.E)
 type_combo = ttk.Combobox(editor_frame, values=ACTION_TYPES, state='disabled', width=15)
-type_combo.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+type_combo.grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
 type_combo.bind("<<ComboboxSelected>>", on_type_change)
 Tooltip(type_combo, "Type of action: key press or mouse movement.")
 
-capture_btn = ttk.Button(editor_frame, text="Capture Input", command=capture_input, state='disabled')
-capture_btn.grid(row=1, column=2, padx=5, pady=5)
-Tooltip(capture_btn, "Capture a key or mouse button press.")
+# Type-specific widgets (created but not gridded yet)
+key_label = ttk.Label(editor_frame, text="Key:")  # Added missing label
 key_entry = ttk.Entry(editor_frame, textvariable=key_var, state='disabled', width=15)
-key_entry.grid(row=1, column=3, padx=5, pady=5, sticky=tk.W)
 Tooltip(key_entry, "The key or button for this action.")
+capture_btn = ttk.Button(editor_frame, text="Capture Input", command=capture_input, state='disabled')
+Tooltip(capture_btn, "Capture a key or mouse button press.")
 
 x_label = ttk.Label(editor_frame, text="X Position:")
-x_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
 x_entry = ttk.Entry(editor_frame, textvariable=x_var, state='disabled', width=15)
-x_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
 Tooltip(x_entry, "X coordinate for mouse move.")
 
 y_label = ttk.Label(editor_frame, text="Y Position:")
-y_label.grid(row=2, column=2, padx=5, pady=5, sticky=tk.E)
 y_entry = ttk.Entry(editor_frame, textvariable=y_var, state='disabled', width=15)
-y_entry.grid(row=2, column=3, padx=5, pady=5, sticky=tk.W)
 Tooltip(y_entry, "Y coordinate for mouse move.")
 
 capture_pos_btn = ttk.Button(editor_frame, text="Capture Position", command=capture_position, state='disabled')
-capture_pos_btn.grid(row=2, column=4, padx=5, pady=5)
 Tooltip(capture_pos_btn, "Capture current mouse position.")
 
 move_dur_label = ttk.Label(editor_frame, text="Move Duration (seconds):")
-move_dur_label.grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
 move_dur_entry = ttk.Entry(editor_frame, textvariable=move_dur_var, state='disabled', width=15)
-move_dur_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
 Tooltip(move_dur_entry, "Time to perform the mouse movement (human-like if >0).")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
-save_btn.grid(row=4, column=0, columnspan=5, pady=10)
+save_btn.grid(row=3, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
 Tooltip(save_btn, "Save edits to the selected action.")
 
 # Bindings

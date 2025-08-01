@@ -1,0 +1,1 @@
+[{"type": "mouse_move", "delay": 2.0, "move_duration": 1.0, "x": 1764, "y": 487}, {"type": "key_action", "delay": 3.0, "move_duration": 0.0, "key": "Key.shift + A"}, {"type": "mouse_move", "delay": 2.0, "move_duration": 0.5, "x": 105, "y": 380}]
