@@ -16,6 +16,13 @@ try:
 except ImportError:
     numpy_available = False
 
+# Attempt to import PIL for color checking
+try:
+    from PIL import ImageGrab
+    pil_available = True
+except ImportError:
+    pil_available = False
+
 # Warm up numpy random number generator to avoid delay on first use
 if numpy_available:
     np.random.seed(0)  # Dummy seed for warmup
@@ -126,7 +133,7 @@ kb_controller = KeyboardController()
 mouse_controller = MouseController()
 
 # Action types
-ACTION_TYPES = ['key_action', 'mouse_move']
+ACTION_TYPES = ['key_action', 'mouse_move', 'color_check']
 
 # Tooltip class for user-friendly hints (modified to use a fixed label at the bottom)
 class Tooltip:
@@ -169,6 +176,9 @@ def get_action_details(action):
         min_y = action.get('min_y', 0)
         max_y = action.get('max_y', 0)
         return f"Position: ({min_x}-{max_x}, {min_y}-{max_y}), Duration: {dur_str}s"
+    elif action['type'] == 'color_check':
+        color = action.get('expected_color', '#000000')
+        return f"Expected Color: {color}"
     return ""
 
 def on_press(key):
@@ -327,6 +337,8 @@ def playback_macro():
     update_status("Playback starting in 3 seconds...")
     if not numpy_available:
         update_status("Warning: numpy not installed, mouse movements will be instant.")
+    if not pil_available:
+        update_status("Warning: PIL not installed, color checks will be skipped.")
     root.update()
     interruptible_sleep(3)
     root.after(0, update_ui_for_playback)
@@ -384,6 +396,19 @@ def playback_macro():
                     dest_y = random.uniform(action['min_y'], action['max_y'])
                     human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_dur, seed=hash((current_pos, (dest_x, dest_y))))
                     current_pos = (dest_x, dest_y)
+                elif action['type'] == 'color_check':
+                    if not pil_available:
+                        update_status("Skipping color check: PIL not available.")
+                        continue
+                    actual_color = ImageGrab.grab().getpixel(mouse_controller.position)
+                    expected_hex = action['expected_color']
+                    expected = tuple(int(expected_hex[i:i+2], 16) for i in (1, 3, 5))
+                    if actual_color != expected:
+                        playback_active = False
+                        root.after(0, lambda: messagebox.showinfo("Color Mismatch", "Color check failed. Playback stopped."))
+                        root.after(0, lambda: update_status("Playback stopped due to color mismatch."))
+                        root.after(0, update_ui_for_playback)
+                        break
             rep += 1
             if repeat_mode == "Loops" and rep >= repeat_value:
                 break
@@ -459,6 +484,8 @@ def insert_action(action_type, after_iid=None):
         new_action['max_y'] = 0
         new_action['min_move_duration'] = 0.5
         new_action['max_move_duration'] = 0.5
+    elif action_type == 'color_check':
+        new_action['expected_color'] = '#ffffff'  # Default white
     
     if after_iid is None:
         pos = len(actions)
@@ -512,6 +539,9 @@ def populate_editor(action):
     max_y_var.set(str(action.get('max_y', 0)))
     min_move_dur_var.set(f"{action.get('min_move_duration', 0.0):.3f}")
     max_move_dur_var.set(f"{action.get('max_move_duration', 0.0):.3f}")
+    hex_var.set(action.get('expected_color', '#ffffff'))
+    check_x_var.set('')
+    check_y_var.set('')
 
     # Hide all type-specific widgets first
     key_label.grid_remove()
@@ -530,6 +560,14 @@ def populate_editor(action):
     min_move_dur_entry.grid_remove()
     max_move_dur_label.grid_remove()
     max_move_dur_entry.grid_remove()
+    hex_label.grid_remove()
+    hex_entry.grid_remove()
+    capture_on_click_btn.grid_remove()
+    check_x_label.grid_remove()
+    check_x_entry.grid_remove()
+    check_y_label.grid_remove()
+    check_y_entry.grid_remove()
+    capture_at_coord_btn.grid_remove()
 
     if action['type'] == 'key_action':
         key_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
@@ -558,6 +596,20 @@ def populate_editor(action):
         capture_zone_btn.config(state='normal')
         min_move_dur_entry.config(state='normal')
         max_move_dur_entry.config(state='normal')
+    elif action['type'] == 'color_check':
+        hex_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        hex_entry.grid(row=2, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        capture_on_click_btn.grid(row=2, column=4, padx=5, pady=5)
+        check_x_label.grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
+        check_x_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+        check_y_label.grid(row=3, column=2, padx=5, pady=5, sticky=tk.E)
+        check_y_entry.grid(row=3, column=3, padx=5, pady=5, sticky=tk.W)
+        capture_at_coord_btn.grid(row=3, column=4, padx=5, pady=5)
+        hex_entry.config(state='normal')
+        capture_on_click_btn.config(state='normal')
+        check_x_entry.config(state='normal')
+        check_y_entry.config(state='normal')
+        capture_at_coord_btn.config(state='normal')
     
     save_btn.config(state='normal')
 
@@ -572,6 +624,9 @@ def clear_editor():
     max_y_var.set('')
     min_move_dur_var.set('')
     max_move_dur_var.set('')
+    hex_var.set('')
+    check_x_var.set('')
+    check_y_var.set('')
     min_delay_entry.config(state='disabled')
     max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
@@ -582,8 +637,13 @@ def clear_editor():
     max_y_entry.config(state='disabled')
     min_move_dur_entry.config(state='disabled')
     max_move_dur_entry.config(state='disabled')
+    hex_entry.config(state='disabled')
+    check_x_entry.config(state='disabled')
+    check_y_entry.config(state='disabled')
     capture_btn.config(state='disabled')
     capture_zone_btn.config(state='disabled')
+    capture_on_click_btn.config(state='disabled')
+    capture_at_coord_btn.config(state='disabled')
     save_btn.config(state='disabled')
     # Hide type-specific widgets
     key_label.grid_remove()
@@ -602,6 +662,14 @@ def clear_editor():
     min_move_dur_entry.grid_remove()
     max_move_dur_label.grid_remove()
     max_move_dur_entry.grid_remove()
+    hex_label.grid_remove()
+    hex_entry.grid_remove()
+    capture_on_click_btn.grid_remove()
+    check_x_label.grid_remove()
+    check_x_entry.grid_remove()
+    check_y_label.grid_remove()
+    check_y_entry.grid_remove()
+    capture_at_coord_btn.grid_remove()
 
 def on_type_change(event):
     action = actions[selected_idx]
@@ -622,6 +690,8 @@ def on_type_change(event):
                 del action['min_move_duration']
             if 'max_move_duration' in action:
                 del action['max_move_duration']
+            if 'expected_color' in action:
+                del action['expected_color']
         elif new_type == 'mouse_move':
             action['min_x'] = 0
             action['max_x'] = 0
@@ -631,6 +701,24 @@ def on_type_change(event):
             action['max_move_duration'] = 0.5
             if 'key' in action:
                 del action['key']
+            if 'expected_color' in action:
+                del action['expected_color']
+        elif new_type == 'color_check':
+            action['expected_color'] = '#ffffff'
+            if 'key' in action:
+                del action['key']
+            if 'min_x' in action:
+                del action['min_x']
+            if 'max_x' in action:
+                del action['max_x']
+            if 'min_y' in action:
+                del action['min_y']
+            if 'max_y' in action:
+                del action['max_y']
+            if 'min_move_duration' in action:
+                del action['min_move_duration']
+            if 'max_move_duration' in action:
+                del action['max_move_duration']
         populate_editor(action)
         update_tree()
 
@@ -664,6 +752,15 @@ def save_changes():
             action['key'] = key_var.get().strip()
             if not action['key']:
                 raise ValueError("Key cannot be empty.")
+        elif action['type'] == 'color_check':
+            expected_color = hex_var.get().strip()
+            if not expected_color.startswith('#') or len(expected_color) != 7:
+                raise ValueError("Invalid hex color format. Use #RRGGBB.")
+            try:
+                int(expected_color[1:], 16)
+            except ValueError:
+                raise ValueError("Invalid hex color value.")
+            action['expected_color'] = expected_color
     except ValueError as e:
         messagebox.showerror("Invalid Input", str(e) or "Invalid values entered.")
         return
@@ -777,6 +874,45 @@ def capture_zone():
     capture_listener_mouse = mouse.Listener(on_click=on_capture_click, on_move=on_capture_move)
     capture_listener_mouse.start()
     update_status("Hold left mouse and drag to select zone...")
+
+def capture_color_on_click():
+    if not pil_available:
+        messagebox.showwarning("PIL not available", "Cannot capture color without PIL.")
+        return
+    global capture_listener_mouse
+    if capture_listener_mouse:
+        capture_listener_mouse.stop()
+    update_status("In 3 seconds, click on the screen to capture color...")
+    root.update()
+    time.sleep(3)
+    def on_click(x, y, button, pressed):
+        if pressed and button == Button.left:
+            color = ImageGrab.grab().getpixel((x, y))
+            hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
+            hex_var.set(hex_color)
+            update_status("Color captured.")
+            capture_listener_mouse.stop()
+            return False
+    capture_listener_mouse = mouse.Listener(on_click=on_click)
+    capture_listener_mouse.start()
+
+def capture_color_at_coord():
+    if not pil_available:
+        messagebox.showwarning("PIL not available", "Cannot capture color without PIL.")
+        return
+    try:
+        x = int(check_x_var.get())
+        y = int(check_y_var.get())
+    except ValueError:
+        messagebox.showerror("Invalid Input", "Invalid coordinates.")
+        return
+    update_status(f"Capturing color at ({x}, {y}) in 3 seconds...")
+    root.update()
+    time.sleep(3)
+    color = ImageGrab.grab().getpixel((x, y))
+    hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
+    hex_var.set(hex_color)
+    update_status("Color captured.")
 
 def show_menu(event):
     menu.delete(0, tk.END)
@@ -990,6 +1126,9 @@ min_y_var = tk.StringVar()
 max_y_var = tk.StringVar()
 min_move_dur_var = tk.StringVar()
 max_move_dur_var = tk.StringVar()
+hex_var = tk.StringVar()
+check_x_var = tk.StringVar()
+check_y_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
@@ -1044,6 +1183,24 @@ Tooltip(min_move_dur_entry, "Minimum time to perform the mouse movement (human-l
 max_move_dur_label = ttk.Label(editor_frame, text="Max Move Dur (s):")
 max_move_dur_entry = ttk.Entry(editor_frame, textvariable=max_move_dur_var, state='disabled', width=15)
 Tooltip(max_move_dur_entry, "Maximum time to perform the mouse movement (randomized between min and max).")
+
+hex_label = ttk.Label(editor_frame, text="Hex Color:")
+hex_entry = ttk.Entry(editor_frame, textvariable=hex_var, state='disabled', width=15)
+Tooltip(hex_entry, "Expected color in hex format (#RRGGBB).")
+
+capture_on_click_btn = ttk.Button(editor_frame, text="Capture on Click", command=capture_color_on_click, state='disabled')
+Tooltip(capture_on_click_btn, "After 3s delay, click to capture color at clicked position.")
+
+check_x_label = ttk.Label(editor_frame, text="X:")
+check_x_entry = ttk.Entry(editor_frame, textvariable=check_x_var, state='disabled', width=10)
+Tooltip(check_x_entry, "X coordinate for capture (optional).")
+
+check_y_label = ttk.Label(editor_frame, text="Y:")
+check_y_entry = ttk.Entry(editor_frame, textvariable=check_y_var, state='disabled', width=10)
+Tooltip(check_y_entry, "Y coordinate for capture (optional).")
+
+capture_at_coord_btn = ttk.Button(editor_frame, text="Capture at Coord", command=capture_color_at_coord, state='disabled')
+Tooltip(capture_at_coord_btn, "After 3s delay, capture color at specified coordinates.")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
 save_btn.grid(row=5, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
