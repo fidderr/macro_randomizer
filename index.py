@@ -110,7 +110,9 @@ def interruptible_sleep(duration):
             pass
     else:
         while time.time() < end_time and playback_active:
-            time.sleep(min(0.001, end_time - time.time()))
+            remaining = end_time - time.time()
+            if remaining > 0:
+                time.sleep(min(0.001, remaining))
 
 # Global variables
 actions = []  # List to store recorded/edited actions
@@ -254,18 +256,51 @@ def on_click(x, y, button, pressed):
                 actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
         else:
             if sparse_recording:
-                min_x = x
-                max_x = x
-                min_y = y
-                max_y = y
                 if drag_start_pos:
-                    dx = abs(x - drag_start_pos[0])
-                    dy = abs(y - drag_start_pos[1])
-                    if dx > 10 or dy > 10:  # Threshold to detect intentional drag for zone
-                        min_x = min(drag_start_pos[0], x)
-                        max_x = max(drag_start_pos[0], x)
-                        min_y = min(drag_start_pos[1], y)
-                        max_y = max(drag_start_pos[1], y)
+                    sx, sy = drag_start_pos
+                    min_x = min(sx, x)
+                    max_x = max(sx, x)
+                    min_y = min(sy, y)
+                    max_y = max(sy, y)
+                    drag_width = max_x - min_x
+                    drag_height = max_y - min_y
+                    radius = 0
+                    try:
+                        radius = int(click_radius_var.get())
+                        if radius < 0:
+                            radius = 0
+                    except ValueError:
+                        pass
+                    if drag_width <= 2 and drag_height <= 2:
+                        # Treat as just click, apply radius
+                        center_x = (min_x + max_x) // 2
+                        center_y = (min_y + max_y) // 2
+                        min_x = center_x - radius
+                        max_x = center_x + radius
+                        min_y = center_y - radius
+                        max_y = center_y + radius
+                        if block_underlying_var.get():
+                            if not overlay:
+                                create_recording_overlay()
+                            if drag_rect:
+                                canvas.delete(drag_rect)
+                                drag_rect = None
+                            if min_x == max_x and min_y == max_y:  # radius == 0
+                                half = 10
+                                canvas.create_line(min_x - half, min_y, min_x + half, min_y, fill='red', width=2)
+                                canvas.create_line(min_x, min_y - half, min_x, min_y + half, fill='red', width=2)
+                            else:
+                                drag_rect = canvas.create_rectangle(min_x, min_y, max_x, max_y, outline='red', width=2)
+                            overlay.after(500, destroy_recording_overlay)
+                    else:
+                        # Drag detected, destroy overlay immediately
+                        if overlay:
+                            destroy_recording_overlay()
+                else:
+                    min_x = x
+                    max_x = x
+                    min_y = y
+                    max_y = y
                 actions.append({'type': 'mouse_move', 'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'timestamp': press_times[button_key], 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
             else:
                 actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
@@ -274,8 +309,6 @@ def on_click(x, y, button, pressed):
             press_times.pop(button_key, None)
             if sparse_recording:
                 last_ts = ts
-            if sparse_recording and overlay:
-                destroy_recording_overlay()
             drag_start_pos = None
 
 def create_recording_overlay():
@@ -1396,6 +1429,13 @@ duration_extra_var = tk.StringVar(value="0.0")
 duration_extra_entry = ttk.Entry(button_frame, textvariable=duration_extra_var, width=5)
 duration_extra_entry.grid(row=0, column=2, padx=5)
 Tooltip(duration_extra_entry, "Extra duration added to max move duration in sparse recording (min = recorded duration, max = recorded + extra).")
+
+click_radius_label = ttk.Label(button_frame, text="Click Radius (px):")
+click_radius_label.grid(row=0, column=9, padx=5)
+click_radius_var = tk.StringVar(value="0")
+click_radius_entry = ttk.Entry(button_frame, textvariable=click_radius_var, width=5)
+click_radius_entry.grid(row=0, column=10, padx=5)
+Tooltip(click_radius_entry, "In sparse recording, for clicks without drag (or small jiggle), expand the mouse zone by this radius in all directions to create a square random area.")
 
 # Treeview for displaying actions
 columns = ("delay", "type", "details", "comment")
