@@ -186,14 +186,11 @@ def get_action_details(action):
         else:
             return f"Press Key: {key}"
     elif action['type'] == 'mouse_move':
-        min_dur = action.get('min_move_duration', 0.0)
-        max_dur = action.get('max_move_duration', 0.0)
-        dur_str = f"{min_dur:.3f} - {max_dur:.3f}"
         min_x = action.get('min_x', 0)
         max_x = action.get('max_x', 0)
         min_y = action.get('min_y', 0)
         max_y = action.get('max_y', 0)
-        return f"Position: ({min_x}-{max_x}, {min_y}-{max_y}), Duration: {dur_str}s"
+        return f"Position: ({min_x}-{max_x}, {min_y}-{max_y})"
     elif action['type'] == 'color_check':
         color = action.get('expected_color', '#000000')
         return f"Expected Color: {color}"
@@ -229,7 +226,7 @@ def on_release(key):
 def on_move(x, y):
     if recording and not sparse_recording:
         timestamp = time.time() - start_time
-        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+        actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': timestamp, 'comment': ''})
 
 def on_move_sparse(x, y):
     global drag_rect, overlay, canvas
@@ -253,7 +250,7 @@ def on_click(x, y, button, pressed):
             drag_rect = None
             press_times[button_key] = ts
             if not sparse_recording:
-                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'comment': ''})
         else:
             if sparse_recording:
                 if drag_start_pos:
@@ -301,9 +298,9 @@ def on_click(x, y, button, pressed):
                     max_x = x
                     min_y = y
                     max_y = y
-                actions.append({'type': 'mouse_move', 'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'timestamp': press_times[button_key], 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+                actions.append({'type': 'mouse_move', 'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'timestamp': press_times[button_key], 'comment': ''})
             else:
-                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'min_move_duration': 0.0, 'max_move_duration': 0.0, 'comment': ''})
+                actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'comment': ''})
             timestamp = press_times.get(button_key, ts)
             actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp, 'comment': ''})
             press_times.pop(button_key, None)
@@ -409,10 +406,8 @@ def stop_recording():
                 ts = action['timestamp']
                 d = ts - prev_ts
                 if action['type'] == 'mouse_move':
-                    action['min_delay'] = 0.0
-                    action['max_delay'] = 0.0
-                    action['min_move_duration'] = d
-                    action['max_move_duration'] = d + duration_extra
+                    action['min_delay'] = d
+                    action['max_delay'] = d + duration_extra
                 else:
                     action['min_delay'] = 0.0
                     action['max_delay'] = 0.0
@@ -509,6 +504,8 @@ def playback_macro():
         current_pos = mouse_controller.position
         rep = 0
         total_seconds = repeat_value * 60 if repeat_mode == "Minutes" else float('inf')
+        min_sec_per_px = 0.00100001
+        max_sec_per_px = 0.00200001
         while playback_active:
             loop_stack = []
             i = 0
@@ -517,10 +514,12 @@ def playback_macro():
                     break
                 action = actions[i]
                 delay = random.uniform(action.get('min_delay', 0.0), action.get('max_delay', 0.0)) * time_multiplier
-                interruptible_sleep(delay)
                 if not playback_active:
                     break
                 if action['type'] == 'key_action':
+                    interruptible_sleep(delay)
+                    if not playback_active:
+                        break
                     key = action['key']
                     items = []
                     def get_key(kstr):
@@ -551,12 +550,34 @@ def playback_macro():
                         if (ctrl, itm) in pressed_items:
                             pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
-                    move_dur = random.uniform(action.get('min_move_duration', 0.0), action.get('max_move_duration', 0.0)) * time_multiplier
                     dest_x = random.uniform(action['min_x'], action['max_x'])
                     dest_y = random.uniform(action['min_y'], action['max_y'])
-                    human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_dur, seed=hash((current_pos, (dest_x, dest_y))))
+                    dist = np.hypot(dest_x - current_pos[0], dest_y - current_pos[1])
+                    if dist > 0:
+                        max_possible_sec_per_px = delay / dist
+                        if max_possible_sec_per_px >= min_sec_per_px:
+                            low = min_sec_per_px
+                            high = min(max_sec_per_px, max_possible_sec_per_px)
+                            sec_per_px = random.uniform(low, high)
+                            move_time = dist * sec_per_px
+                            pause_before = delay - move_time
+                        else:
+                            move_time = delay
+                            pause_before = 0
+                        interruptible_sleep(pause_before)
+                        if not playback_active:
+                            break
+                        if numpy_available:
+                            human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_time, seed=hash((current_pos, (dest_x, dest_y))))
+                        else:
+                            mouse_controller.position = (dest_x, dest_y)
+                    else:
+                        interruptible_sleep(delay)
                     current_pos = (dest_x, dest_y)
                 elif action['type'] == 'color_check':
+                    interruptible_sleep(delay)
+                    if not playback_active:
+                        break
                     if not pil_available:
                         update_status("Skipping color check: PIL not available.")
                         i += 1
@@ -571,9 +592,15 @@ def playback_macro():
                         root.after(0, update_ui_for_playback)
                         break
                 elif action['type'] == 'loop_start':
+                    interruptible_sleep(delay)
+                    if not playback_active:
+                        break
                     loops = random.randint(action.get('min_loops', 1), action.get('max_loops', 1))
                     loop_stack.append({'start': i, 'remaining': loops, 'name': action.get('name', '')})
                 elif action['type'] == 'loop_end':
+                    interruptible_sleep(delay)
+                    if not playback_active:
+                        break
                     if not loop_stack or loop_stack[-1]['name'] != action.get('name', ''):
                         playback_active = False
                         root.after(0, lambda: update_status("Mismatched loop names. Playback stopped."))
@@ -660,8 +687,6 @@ def insert_action(action_type, after_iid=None):
         new_action['max_x'] = 0
         new_action['min_y'] = 0
         new_action['max_y'] = 0
-        new_action['min_move_duration'] = 0.2
-        new_action['max_move_duration'] = 0.5
     elif action_type == 'color_check':
         new_action['expected_color'] = '#ffffff'  # Default white
     elif action_type == 'loop_start':
@@ -792,8 +817,6 @@ def populate_editor(action):
     max_x_var.set(str(action.get('max_x', 0)))
     min_y_var.set(str(action.get('min_y', 0)))
     max_y_var.set(str(action.get('max_y', 0)))
-    min_move_dur_var.set(f"{action.get('min_move_duration', 0.0):.3f}")
-    max_move_dur_var.set(f"{action.get('max_move_duration', 0.0):.3f}")
     hex_var.set(action.get('expected_color', '#ffffff'))
     check_x_var.set('')
     check_y_var.set('')
@@ -815,10 +838,6 @@ def populate_editor(action):
     max_y_label.grid_remove()
     max_y_entry.grid_remove()
     capture_zone_btn.grid_remove()
-    min_move_dur_label.grid_remove()
-    min_move_dur_entry.grid_remove()
-    max_move_dur_label.grid_remove()
-    max_move_dur_entry.grid_remove()
     hex_label.grid_remove()
     hex_entry.grid_remove()
     capture_on_click_btn.grid_remove()
@@ -850,17 +869,11 @@ def populate_editor(action):
         max_y_label.grid(row=3, column=2, padx=5, pady=5, sticky=tk.E)
         max_y_entry.grid(row=3, column=3, padx=5, pady=5, sticky=tk.W)
         capture_zone_btn.grid(row=3, column=4, padx=5, pady=5)
-        min_move_dur_label.grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
-        min_move_dur_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
-        max_move_dur_label.grid(row=4, column=2, padx=5, pady=5, sticky=tk.E)
-        max_move_dur_entry.grid(row=4, column=3, padx=5, pady=5, sticky=tk.W)
         min_x_entry.config(state='normal')
         max_x_entry.config(state='normal')
         min_y_entry.config(state='normal')
         max_y_entry.config(state='normal')
         capture_zone_btn.config(state='normal')
-        min_move_dur_entry.config(state='normal')
-        max_move_dur_entry.config(state='normal')
         show_preview(action['min_x'], action['max_x'], action['min_y'], action['max_y'])
         update_status("Previewing mouse zone. Click on the preview to close.")
     elif action['type'] == 'color_check':
@@ -908,8 +921,6 @@ def clear_editor():
     max_x_var.set('')
     min_y_var.set('')
     max_y_var.set('')
-    min_move_dur_var.set('')
-    max_move_dur_var.set('')
     hex_var.set('')
     check_x_var.set('')
     check_y_var.set('')
@@ -925,8 +936,6 @@ def clear_editor():
     max_x_entry.config(state='disabled')
     min_y_entry.config(state='disabled')
     max_y_entry.config(state='disabled')
-    min_move_dur_entry.config(state='disabled')
-    max_move_dur_entry.config(state='disabled')
     hex_entry.config(state='disabled')
     check_x_entry.config(state='disabled')
     check_y_entry.config(state='disabled')
@@ -952,10 +961,6 @@ def clear_editor():
     max_y_label.grid_remove()
     max_y_entry.grid_remove()
     capture_zone_btn.grid_remove()
-    min_move_dur_label.grid_remove()
-    min_move_dur_entry.grid_remove()
-    max_move_dur_label.grid_remove()
-    max_move_dur_entry.grid_remove()
     hex_label.grid_remove()
     hex_entry.grid_remove()
     capture_on_click_btn.grid_remove()
@@ -981,7 +986,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'min_move_duration', 'max_move_duration', 'expected_color', 'name', 'min_loops', 'max_loops']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'name', 'min_loops', 'max_loops']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -990,15 +995,13 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            action['min_move_duration'] = 0.5
-            action['max_move_duration'] = 0.5
             keys_to_del = ['key', 'expected_color', 'name', 'min_loops', 'max_loops']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'color_check':
             action['expected_color'] = '#ffffff'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'min_move_duration', 'max_move_duration', 'name', 'min_loops', 'max_loops']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1006,13 +1009,13 @@ def on_type_change(event):
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'min_move_duration', 'max_move_duration', 'expected_color']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'min_move_duration', 'max_move_duration', 'expected_color', 'min_loops', 'max_loops']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'min_loops', 'max_loops']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1029,12 +1032,6 @@ def save_changes():
         action['min_delay'] = min_delay
         action['max_delay'] = max_delay
         if action['type'] == 'mouse_move':
-            min_dur = float(min_move_dur_var.get())
-            max_dur = float(max_move_dur_var.get())
-            if min_dur < 0 or max_dur < 0 or min_dur > max_dur:
-                raise ValueError("Min duration must be <= max duration and both non-negative.")
-            action['min_move_duration'] = min_dur
-            action['max_move_duration'] = max_dur
             min_x = int(min_x_var.get())
             max_x = int(max_x_var.get())
             min_y = int(min_y_var.get())
@@ -1489,8 +1486,6 @@ min_x_var = tk.StringVar()
 max_x_var = tk.StringVar()
 min_y_var = tk.StringVar()
 max_y_var = tk.StringVar()
-min_move_dur_var = tk.StringVar()
-max_move_dur_var = tk.StringVar()
 hex_var = tk.StringVar()
 check_x_var = tk.StringVar()
 check_y_var = tk.StringVar()
@@ -1544,14 +1539,6 @@ Tooltip(max_y_entry, "Maximum Y coordinate for mouse zone.")
 
 capture_zone_btn = ttk.Button(editor_frame, text="Capture Zone", command=capture_zone, state='disabled')
 Tooltip(capture_zone_btn, "Capture a mouse zone by dragging.")
-
-min_move_dur_label = ttk.Label(editor_frame, text="Min Move Dur (s):")
-min_move_dur_entry = ttk.Entry(editor_frame, textvariable=min_move_dur_var, state='disabled', width=15)
-Tooltip(min_move_dur_entry, "Minimum time to perform the mouse movement (human-like if >0).")
-
-max_move_dur_label = ttk.Label(editor_frame, text="Max Move Dur (s):")
-max_move_dur_entry = ttk.Entry(editor_frame, textvariable=max_move_dur_var, state='disabled', width=15)
-Tooltip(max_move_dur_entry, "Maximum time to perform the mouse movement (randomized between min and max).")
 
 hex_label = ttk.Label(editor_frame, text="Hex Color:")
 hex_entry = ttk.Entry(editor_frame, textvariable=hex_var, state='disabled', width=15)
