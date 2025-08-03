@@ -484,6 +484,14 @@ def playback_macro():
     except ValueError:
         messagebox.showerror("Invalid Input", "Repeat value must be a positive number.")
         return
+    try:
+        speed_perc = float(speed_var.get())
+        if speed_perc < 1 or speed_perc > 200:
+            raise ValueError
+    except ValueError:
+        messagebox.showerror("Invalid Speed", "Speed must be between 1 and 200.")
+        return
+    time_multiplier = 100.0 / speed_perc
     playback_active = True
     pressed_items = []
     update_status("Playback starting in 3 seconds...")
@@ -508,7 +516,7 @@ def playback_macro():
                 if time.time() - playback_start >= total_seconds:
                     break
                 action = actions[i]
-                delay = random.uniform(action.get('min_delay', 0.0), action.get('max_delay', 0.0))
+                delay = random.uniform(action.get('min_delay', 0.0), action.get('max_delay', 0.0)) * time_multiplier
                 interruptible_sleep(delay)
                 if not playback_active:
                     break
@@ -535,7 +543,7 @@ def playback_macro():
                         if itm is not None:
                             ctrl.press(itm)
                             pressed_items.append((ctrl, itm))
-                    hold_duration = random.uniform(0.001, 0.3)
+                    hold_duration = random.uniform(0.001, 0.3) * time_multiplier
                     interruptible_sleep(hold_duration)
                     for ctrl, itm in reversed(items):
                         if itm is not None:
@@ -543,7 +551,7 @@ def playback_macro():
                         if (ctrl, itm) in pressed_items:
                             pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
-                    move_dur = random.uniform(action.get('min_move_duration', 0.0), action.get('max_move_duration', 0.0))
+                    move_dur = random.uniform(action.get('min_move_duration', 0.0), action.get('max_move_duration', 0.0)) * time_multiplier
                     dest_x = random.uniform(action['min_x'], action['max_x'])
                     dest_y = random.uniform(action['min_y'], action['max_y'])
                     human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_dur, seed=hash((current_pos, (dest_x, dest_y))))
@@ -1436,6 +1444,13 @@ click_radius_var = tk.StringVar(value="0")
 click_radius_entry = ttk.Entry(button_frame, textvariable=click_radius_var, width=5)
 click_radius_entry.grid(row=0, column=10, padx=5)
 Tooltip(click_radius_entry, "In sparse recording, for clicks without drag (or small jiggle), expand the mouse zone by this radius in all directions to create a square random area.")
+
+speed_label = ttk.Label(button_frame, text="Speed (%):")
+speed_label.grid(row=0, column=11, padx=5)
+speed_var = tk.StringVar(value="100")
+speed_spin = Spinbox(button_frame, from_=1, to=200, textvariable=speed_var, width=5)
+speed_spin.grid(row=0, column=12, padx=5)
+Tooltip(speed_spin, "Playback speed percentage: 100% normal, >100% faster, <100% slower.")
 
 # Treeview for displaying actions
 columns = ("delay", "type", "details", "comment")
