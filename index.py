@@ -504,8 +504,8 @@ def playback_macro():
         current_pos = mouse_controller.position
         rep = 0
         total_seconds = repeat_value * 60 if repeat_mode == "Minutes" else float('inf')
-        min_sec_per_px = 0.00100001
-        max_sec_per_px = 0.00200001
+        min_sec_per_px = 0.0010000001
+        max_sec_per_px = 0.0020000001
         while playback_active:
             loop_stack = []
             i = 0
