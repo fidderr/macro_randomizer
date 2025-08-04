@@ -793,16 +793,22 @@ def show_preview(min_x, max_x, min_y, max_y):
     preview_canvas.bind("<Button-1>", lambda e: hide_preview())
 
 def on_tree_select(event):
-    editor_labelframe.pack_forget()
-    hide_preview()
     selected = tree.selection()
+    hide_preview()
     if len(selected) == 1:
         global selected_idx
         selected_idx = int(selected[0])
         populate_editor(actions[selected_idx])
+        populate_batch(remove=True)
+        editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
+    elif len(selected) > 1:
+        clear_editor()
+        populate_batch(remove=False)
         editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
     else:
         clear_editor()
+        populate_batch(remove=True)
+        editor_labelframe.pack_forget()
 
 def populate_editor(action):
     min_delay_var.set(f"{action.get('min_delay', 0.0):.3f}")
@@ -911,6 +917,23 @@ def populate_editor(action):
     comment_entry.config(state='normal')
     
     save_btn.config(state='normal')
+    save_btn.grid(row=6, column=0, columnspan=5, pady=10)
+
+def populate_batch(remove=False):
+    if remove:
+        delta_min_label.grid_remove()
+        delta_min_entry.grid_remove()
+        delta_max_label.grid_remove()
+        delta_max_entry.grid_remove()
+        apply_batch_btn.grid_remove()
+        save_btn.grid(row=6, column=0, columnspan=5, pady=10)
+    else:
+        delta_min_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.E)
+        delta_min_entry.grid(row=7, column=1, padx=5, pady=5, sticky=tk.W)
+        delta_max_label.grid(row=7, column=2, padx=5, pady=5, sticky=tk.E)
+        delta_max_entry.grid(row=7, column=3, padx=5, pady=5, sticky=tk.W)
+        apply_batch_btn.grid(row=8, column=0, columnspan=5, pady=10)
+        save_btn.grid_remove()
 
 def clear_editor():
     min_delay_var.set('')
@@ -977,6 +1000,11 @@ def clear_editor():
     max_loops_entry.grid_remove()
     comment_label.grid_remove()
     comment_entry.grid_remove()
+    delta_min_label.grid_remove()
+    delta_min_entry.grid_remove()
+    delta_max_label.grid_remove()
+    delta_max_entry.grid_remove()
+    apply_batch_btn.grid_remove()
     hide_preview()
 
 def on_type_change(event):
@@ -1081,6 +1109,28 @@ def save_changes():
         hide_preview()
         show_preview(action['min_x'], action['max_x'], action['min_y'], action['max_y'])
     update_status("Changes saved.")
+
+def apply_batch_delay():
+    try:
+        delta_min = float(delta_min_var.get())
+        delta_max = float(delta_max_var.get())
+    except ValueError:
+        messagebox.showerror("Invalid Input", "Delta values must be numbers.")
+        return
+    selected = tree.selection()
+    count = 0
+    for sel in selected:
+        idx = int(sel)
+        action = actions[idx]
+        if action['type'] == 'mouse_move':
+            action['min_delay'] = max(0.0, action.get('min_delay', 0.0) + delta_min)
+            action['max_delay'] = max(0.0, action.get('max_delay', 0.0) + delta_max)
+            count += 1
+    if count > 0:
+        update_tree()
+        update_status(f"Adjusted delays for {count} mouse move actions.")
+    else:
+        update_status("No mouse move actions selected to adjust.")
 
 def capture_input():
     modifier = None
@@ -1493,6 +1543,8 @@ loop_name_var = tk.StringVar()
 min_loops_var = tk.StringVar()
 max_loops_var = tk.StringVar()
 comment_var = tk.StringVar()
+delta_min_var = tk.StringVar(value="0.0")
+delta_max_var = tk.StringVar(value="0.0")
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
@@ -1577,6 +1629,17 @@ Tooltip(comment_entry, "Optional comment to describe what this action does.")
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
 save_btn.grid(row=6, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
 Tooltip(save_btn, "Save edits to the selected action.")
+
+delta_min_label = ttk.Label(editor_frame, text="Delta Min Delay:")
+delta_min_entry = ttk.Entry(editor_frame, textvariable=delta_min_var, width=15)
+Tooltip(delta_min_entry, "Amount to add to min delay of selected mouse moves (negative to decrease).")
+
+delta_max_label = ttk.Label(editor_frame, text="Delta Max Delay:")
+delta_max_entry = ttk.Entry(editor_frame, textvariable=delta_max_var, width=15)
+Tooltip(delta_max_entry, "Amount to add to max delay of selected mouse moves (negative to decrease).")
+
+apply_batch_btn = ttk.Button(editor_frame, text="Apply to Selected Mouse Moves", command=apply_batch_delay)
+Tooltip(apply_batch_btn, "Apply the delta adjustments to min and max delays of all selected mouse_move actions.")
 
 # Bindings
 tree.bind("<<TreeviewSelect>>", on_tree_select)
