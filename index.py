@@ -217,7 +217,7 @@ def on_release(key):
     global recording, last_ts
     if recording:
         key_str = str(key).replace("'", "") if hasattr(key, 'char') else str(key)
-        timestamp = press_times.get(key_str, time.time() - start_time)
+        timestamp = time.time() - start_time
         actions.append({'type': 'key_action', 'key': key_str, 'timestamp': timestamp, 'comment': ''})
         press_times.pop(key_str, None)
         if sparse_recording:
@@ -301,7 +301,7 @@ def on_click(x, y, button, pressed):
                 actions.append({'type': 'mouse_move', 'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'timestamp': press_times[button_key], 'comment': ''})
             else:
                 actions.append({'type': 'mouse_move', 'min_x': x, 'max_x': x, 'min_y': y, 'max_y': y, 'timestamp': ts - 0.001, 'comment': ''})
-            timestamp = press_times.get(button_key, ts)
+            timestamp = ts
             actions.append({'type': 'key_action', 'key': button_key, 'timestamp': timestamp, 'comment': ''})
             press_times.pop(button_key, None)
             if sparse_recording:
@@ -550,9 +550,18 @@ def playback_macro():
                         if (ctrl, itm) in pressed_items:
                             pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
-                    dest_x = random.uniform(action['min_x'], action['max_x'])
-                    dest_y = random.uniform(action['min_y'], action['max_y'])
-                    dist = np.hypot(dest_x - current_pos[0], dest_y - current_pos[1])
+                    min_x = action['min_x']
+                    max_x = action['max_x']
+                    min_y = action['min_y']
+                    max_y = action['max_y']
+                    cx, cy = current_pos
+                    if min_x <= cx <= max_x and min_y <= cy <= max_y:
+                        dest_x = cx
+                        dest_y = cy
+                    else:
+                        dest_x = random.uniform(min_x, max_x)
+                        dest_y = random.uniform(min_y, max_y)
+                    dist = np.hypot(dest_x - current_pos[0], dest_y - current_pos[1]) if numpy_available else ((dest_x - current_pos[0])**2 + (dest_y - current_pos[1])**2)**0.5
                     if dist > 0:
                         max_possible_sec_per_px = delay / dist
                         if max_possible_sec_per_px >= min_sec_per_px:
