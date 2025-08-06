@@ -82,7 +82,7 @@ def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
     M_0 = 15
     D_0 = 12
     # Decide if to introduce a "miss" for more human-like behavior (20% chance)
-    miss_prob = 1
+    miss_prob = 0.3
     if random.random() < miss_prob:
         # Compute a temporary target near the destination for overshoot/miss
         angle = random.uniform(0, 2 * np.pi)
