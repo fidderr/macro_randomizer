@@ -89,8 +89,13 @@ def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
         miss_dist = random.uniform(30, 300)  # Pixels to miss by
         temp_x = dest_x + miss_dist * np.cos(angle)
         temp_y = dest_y + miss_dist * np.sin(angle)
-        # Allocate time: most for main move, rest for correction
-        main_fraction = random.uniform(0.7, 0.9)
+        # Compute distances for proportional time allocation
+        dist_main = np.hypot(temp_x - start_x, temp_y - start_y)
+        dist_corr = np.hypot(temp_x - dest_x, temp_y - dest_y)  # Approximately miss_dist
+        total_dist = dist_main + dist_corr
+        if total_dist == 0:
+            total_dist = 1  # Avoid division by zero
+        main_fraction = dist_main / total_dist
         main_duration = duration * main_fraction
         correction_duration = duration - main_duration
         # Move to temp target
@@ -106,6 +111,14 @@ def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
                     break
                 mouse_controller.position = (px, py)
                 interruptible_sleep(step_time)
+        # Add a small pause at the miss position if correction_duration allows
+        pause = 0
+        if correction_duration > 0.2:
+            pause = random.uniform(0.1, 0.15)
+            correction_duration -= pause
+            interruptible_sleep(pause)
+            if not playback_active:
+                return
         # Now correct to actual dest
         current_x, current_y = mouse_controller.position  # Get actual end after main move
         path = []
