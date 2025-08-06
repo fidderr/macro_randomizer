@@ -76,29 +76,64 @@ def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
     if duration <= 0 or not numpy_available:
         mouse_controller.position = (dest_x, dest_y)
         return
-    # Fix seed for reproducible paths (no randomness throwing off paths across runs)
-    seed = abs(seed) % (2**32)  # Ensure seed is in 0 to 2**32 - 1
-    np.random.seed(seed)
-    random.seed(seed)
     # Use fixed parameters for consistency, but allow slight variation if desired
     G_0 = 9
     W_0 = 3
     M_0 = 15
     D_0 = 12
-    path = []
-    def collect(x, y):
-        path.append((x, y))
-    wind_mouse(start_x, start_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
-    if not path:
-        mouse_controller.position = (dest_x, dest_y)
-        return
-    num_steps = len(path)
-    step_time = duration / num_steps
-    for px, py in path:
-        if not playback_active:
-            break
-        mouse_controller.position = (px, py)
-        interruptible_sleep(step_time)
+    # Decide if to introduce a "miss" for more human-like behavior (20% chance)
+    miss_prob = 1
+    if random.random() < miss_prob:
+        # Compute a temporary target near the destination for overshoot/miss
+        angle = random.uniform(0, 2 * np.pi)
+        miss_dist = random.uniform(30, 300)  # Pixels to miss by
+        temp_x = dest_x + miss_dist * np.cos(angle)
+        temp_y = dest_y + miss_dist * np.sin(angle)
+        # Allocate time: most for main move, rest for correction
+        main_fraction = random.uniform(0.7, 0.9)
+        main_duration = duration * main_fraction
+        correction_duration = duration - main_duration
+        # Move to temp target
+        path = []
+        def collect(x, y):
+            path.append((x, y))
+        wind_mouse(start_x, start_y, temp_x, temp_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
+        if path:
+            num_steps = len(path)
+            step_time = main_duration / num_steps
+            for px, py in path:
+                if not playback_active:
+                    break
+                mouse_controller.position = (px, py)
+                interruptible_sleep(step_time)
+        # Now correct to actual dest
+        current_x, current_y = mouse_controller.position  # Get actual end after main move
+        path = []
+        wind_mouse(current_x, current_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
+        if path:
+            num_steps = len(path)
+            step_time = correction_duration / num_steps if num_steps > 0 else 0
+            for px, py in path:
+                if not playback_active:
+                    break
+                mouse_controller.position = (px, py)
+                interruptible_sleep(step_time)
+    else:
+        # Normal movement without miss
+        path = []
+        def collect(x, y):
+            path.append((x, y))
+        wind_mouse(start_x, start_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
+        if not path:
+            mouse_controller.position = (dest_x, dest_y)
+            return
+        num_steps = len(path)
+        step_time = duration / num_steps
+        for px, py in path:
+            if not playback_active:
+                break
+            mouse_controller.position = (px, py)
+            interruptible_sleep(step_time)
 
 def interruptible_sleep(duration):
     if duration <= 0:
@@ -504,8 +539,8 @@ def playback_macro():
         current_pos = mouse_controller.position
         rep = 0
         total_seconds = repeat_value * 60 if repeat_mode == "Minutes" else float('inf')
-        min_sec_per_px = 0.0010000001
-        max_sec_per_px = 0.0020000001
+        min_sec_per_px = 0.00030000001
+        max_sec_per_px = 0.00060000001
         while playback_active:
             loop_stack = []
             i = 0
@@ -577,7 +612,7 @@ def playback_macro():
                         if not playback_active:
                             break
                         if numpy_available:
-                            human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_time, seed=hash((current_pos, (dest_x, dest_y))))
+                            human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_time)
                         else:
                             mouse_controller.position = (dest_x, dest_y)
                     else:
