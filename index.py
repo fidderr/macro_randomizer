@@ -81,72 +81,76 @@ def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
     W_0 = 3
     M_0 = 15
     D_0 = 12
-    # Decide if to introduce a "miss" for more human-like behavior (20% chance)
+    # Decide if to introduce a "miss" for more human-like behavior (30% chance)
     miss_prob = 0.3
-    if random.random() < miss_prob:
+    min_sec_per_px = 0.0005  # Hardcoded min sec per px for check
+    do_miss = random.random() < miss_prob
+    if do_miss:
         # Compute a temporary target near the destination for overshoot/miss
         angle = random.uniform(0, 2 * np.pi)
-        miss_dist = random.uniform(30, 300)  # Pixels to miss by
+        miss_dist = random.uniform(20, 100)  # Reduced range for miss_dist
         temp_x = dest_x + miss_dist * np.cos(angle)
         temp_y = dest_y + miss_dist * np.sin(angle)
-        # Compute distances for proportional time allocation
+        # Compute distances
         dist_main = np.hypot(temp_x - start_x, temp_y - start_y)
-        dist_corr = np.hypot(temp_x - dest_x, temp_y - dest_y)  # Approximately miss_dist
+        dist_corr = np.hypot(temp_x - dest_x, temp_y - dest_y)
         total_dist = dist_main + dist_corr
-        if total_dist == 0:
-            total_dist = 1  # Avoid division by zero
-        main_fraction = dist_main / total_dist
-        main_duration = duration * main_fraction
-        correction_duration = duration - main_duration
-        # Move to temp target
-        path = []
-        def collect(x, y):
-            path.append((x, y))
-        wind_mouse(start_x, start_y, temp_x, temp_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
-        if path:
-            num_steps = len(path)
-            step_time = main_duration / num_steps
-            for px, py in path:
-                if not playback_active:
-                    break
-                mouse_controller.position = (px, py)
-                interruptible_sleep(step_time)
-        # Add a small pause at the miss position if correction_duration allows
-        pause = 0
-        if correction_duration > 0.2:
-            pause = random.uniform(0.1, 0.15)
-            correction_duration -= pause
+        # Check if duration allows for miss without going too fast
+        if duration >= min_sec_per_px * total_dist:
+            # Proceed with miss
+            # Determine pause at miss
+            pause = 0
+            if duration > 0.2:
+                max_pause = duration - min_sec_per_px * total_dist
+                pause = random.uniform(0.1, 0.15) if max_pause >= 0.15 else random.uniform(0, max_pause)
+            remaining = duration - pause
+            main_duration = remaining * (dist_main / total_dist)
+            correction_duration = remaining * (dist_corr / total_dist)
+            # Move to temp target
+            path = []
+            def collect(x, y):
+                path.append((x, y))
+            wind_mouse(start_x, start_y, temp_x, temp_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
+            if path:
+                num_steps = len(path)
+                step_time = main_duration / num_steps if num_steps > 0 else 0
+                for px, py in path:
+                    if not playback_active:
+                        break
+                    mouse_controller.position = (px, py)
+                    interruptible_sleep(step_time)
+            # Pause at miss
             interruptible_sleep(pause)
             if not playback_active:
                 return
-        # Now correct to actual dest
-        current_x, current_y = mouse_controller.position  # Get actual end after main move
-        path = []
-        wind_mouse(current_x, current_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
-        if path:
-            num_steps = len(path)
-            step_time = correction_duration / num_steps if num_steps > 0 else 0
-            for px, py in path:
-                if not playback_active:
-                    break
-                mouse_controller.position = (px, py)
-                interruptible_sleep(step_time)
-    else:
-        # Normal movement without miss
-        path = []
-        def collect(x, y):
-            path.append((x, y))
-        wind_mouse(start_x, start_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
-        if not path:
-            mouse_controller.position = (dest_x, dest_y)
+            # Now correct to actual dest
+            current_x, current_y = mouse_controller.position  # Get actual end after main move
+            path = []
+            wind_mouse(current_x, current_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
+            if path:
+                num_steps = len(path)
+                step_time = correction_duration / num_steps if num_steps > 0 else 0
+                for px, py in path:
+                    if not playback_active:
+                        break
+                    mouse_controller.position = (px, py)
+                    interruptible_sleep(step_time)
             return
-        num_steps = len(path)
-        step_time = duration / num_steps
-        for px, py in path:
-            if not playback_active:
-                break
-            mouse_controller.position = (px, py)
-            interruptible_sleep(step_time)
+    # If no miss or miss not allowed, normal movement
+    path = []
+    def collect(x, y):
+        path.append((x, y))
+    wind_mouse(start_x, start_y, dest_x, dest_y, G_0=G_0, W_0=W_0, M_0=M_0, D_0=D_0, move_mouse=collect)
+    if not path:
+        mouse_controller.position = (dest_x, dest_y)
+        return
+    num_steps = len(path)
+    step_time = duration / num_steps
+    for px, py in path:
+        if not playback_active:
+            break
+        mouse_controller.position = (px, py)
+        interruptible_sleep(step_time)
 
 def interruptible_sleep(duration):
     if duration <= 0:
@@ -552,8 +556,8 @@ def playback_macro():
         current_pos = mouse_controller.position
         rep = 0
         total_seconds = repeat_value * 60 if repeat_mode == "Minutes" else float('inf')
-        min_sec_per_px = 0.00030000001
-        max_sec_per_px = 0.00060000001
+        min_sec_per_px = 0.000500000001
+        max_sec_per_px = 0.000800000001
         while playback_active:
             loop_stack = []
             i = 0
@@ -617,10 +621,13 @@ def playback_macro():
                             high = min(max_sec_per_px, max_possible_sec_per_px)
                             sec_per_px = random.uniform(low, high)
                             move_time = dist * sec_per_px
-                            pause_before = delay - move_time
+                            total_pause = delay - move_time
+                            pause_before = random.uniform(0, total_pause)
+                            pause_after = total_pause - pause_before
                         else:
                             move_time = delay
                             pause_before = 0
+                            pause_after = 0
                         interruptible_sleep(pause_before)
                         if not playback_active:
                             break
@@ -628,6 +635,7 @@ def playback_macro():
                             human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_time)
                         else:
                             mouse_controller.position = (dest_x, dest_y)
+                        interruptible_sleep(pause_after)
                     else:
                         interruptible_sleep(delay)
                     current_pos = (dest_x, dest_y)
