@@ -10,6 +10,8 @@ from pynput.mouse import Controller as MouseController, Button
 import random  # For seeding randomness
 import copy
 
+# pip install numpy pillow scipy pynput
+
 # Attempt to import numpy, set flag if unavailable
 try:
     import numpy as np
