@@ -202,7 +202,7 @@ kb_controller = KeyboardController()
 mouse_controller = MouseController()
 
 # Action types
-ACTION_TYPES = ['key_action', 'mouse_move', 'color_check', 'loop_start', 'loop_end', 'mouse_to_color', 'wait']
+ACTION_TYPES = ['key_action', 'mouse_move', 'color_check', 'loop_start', 'loop_end', 'mouse_to_color', 'wait', 'if_color_start', 'else', 'if_end']
 
 # On fail options for color actions
 ON_FAIL_OPTIONS = ['continue', 'wait', 'abort', 'restart']
@@ -276,6 +276,19 @@ def get_action_details(action):
         min_d = action.get('min_delay', 0.0)
         max_d = action.get('max_delay', 0.0)
         return f"Wait {min_d:.3f}-{max_d:.3f}s"
+    elif action['type'] == 'if_color_start':
+        color = action.get('expected_color', '#000000')
+        if action.get('check_at_mouse', False):
+            pos = "at mouse"
+        else:
+            x = action.get('x', 0)
+            y = action.get('y', 0)
+            pos = f"at ({x}, {y})"
+        return f"If Color: {color} {pos}"
+    elif action['type'] == 'else':
+        return "Else"
+    elif action['type'] == 'if_end':
+        return "End If"
     return ""
 
 def on_press(key):
@@ -537,6 +550,22 @@ def save_macro():
         current_filename = filename
         messagebox.showinfo("Saved", f"Macro saved to {filename}")
 
+def find_next_if_part(current_i, part):
+    level = 0
+    for j in range(current_i + 1, len(actions)):
+        a_type = actions[j]['type']
+        if a_type == 'if_color_start':
+            level += 1
+        elif a_type == 'if_end':
+            if level == 0:
+                if part == 'end':
+                    return j
+            level -= 1 if level > 0 else 0
+        elif a_type == 'else':
+            if level == 0 and part == 'else':
+                return j
+    return -1
+
 def playback_macro():
     global playback_active, playback_thread, pressed_items, repeat_mode, repeat_value
     if not actions:
@@ -588,12 +617,11 @@ def playback_macro():
                     break
                 action = actions[i]
                 delay = random.uniform(action.get('min_delay', 0.0), action.get('max_delay', 0.0)) * time_multiplier
+                interruptible_sleep(delay)
                 if not playback_active:
                     break
+                control_types = ['if_color_start', 'else', 'if_end', 'loop_start', 'loop_end']
                 if action['type'] == 'key_action':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
                     key = action['key']
                     items = []
                     def get_key(kstr):
@@ -624,9 +652,6 @@ def playback_macro():
                         if (ctrl, itm) in pressed_items:
                             pressed_items.remove((ctrl, itm))
                 elif action['type'] == 'mouse_move':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
                     min_x = action['min_x']
                     max_x = action['max_x']
                     min_y = action['min_y']
@@ -665,9 +690,6 @@ def playback_macro():
                         interruptible_sleep(delay)
                     current_pos = (dest_x, dest_y)
                 elif action['type'] == 'color_check':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
                     if not pil_available:
                         update_status("Skipping color check: PIL not available.")
                         i += 1
@@ -685,7 +707,7 @@ def playback_macro():
                         if on_fail == 'continue':
                             pass
                         elif on_fail == 'wait':
-                            root.after(0, lambda: update_status("Waiting for color match..."))  # Added for visibility during wait
+                            root.after(0, lambda: update_status("Waiting for color match..."))
                             while playback_active:
                                 actual_color = ImageGrab.grab().getpixel((x, y))
                                 if actual_color == expected:
@@ -701,12 +723,9 @@ def playback_macro():
                             break
                         elif on_fail == 'restart':
                             loop_stack = []
-                            i = 0  # Fixed: Set to 0 instead of -1 to avoid negative indexing bug
+                            i = 0
                             continue
                 elif action['type'] == 'mouse_to_color':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
                     if not pil_available:
                         update_status("Skipping mouse to color: PIL not available.")
                         i += 1
@@ -744,7 +763,7 @@ def playback_macro():
                             i += 1
                             continue
                         elif on_fail == 'wait':
-                            root.after(0, lambda: update_status("Waiting for color in region..."))  # Added for visibility during wait
+                            root.after(0, lambda: update_status("Waiting for color in region..."))
                             while playback_active:
                                 im = ImageGrab.grab(bbox=(min_x, min_y, max_x, max_y))
                                 matching = []
@@ -772,9 +791,33 @@ def playback_macro():
                             break
                         elif on_fail == 'restart':
                             loop_stack = []
-                            i = 0  # Fixed: Set to 0 instead of -1 to avoid negative indexing bug
+                            i = 0
                             continue
-                    dest_x, dest_y = random.choice(matching)
+                    # Improved selection: inset by 10% from borders if possible
+                    all_pixels = matching
+                    if len(all_pixels) > 1:
+                        comp_min_x = min(p[0] for p in all_pixels)
+                        comp_max_x = max(p[0] for p in all_pixels)
+                        comp_min_y = min(p[1] for p in all_pixels)
+                        comp_max_y = max(p[1] for p in all_pixels)
+                        comp_width = comp_max_x - comp_min_x + 1
+                        comp_height = comp_max_y - comp_min_y + 1
+                        inset_w = comp_width * 0.05
+                        inset_h = comp_height * 0.05
+                        inset_min_x = comp_min_x + inset_w
+                        inset_max_x = comp_max_x - inset_w
+                        inset_min_y = comp_min_y + inset_h
+                        inset_max_y = comp_max_y - inset_h
+                        if inset_min_x <= inset_max_x and inset_min_y <= inset_max_y:
+                            filtered = [(px, py) for px, py in all_pixels if inset_min_x <= px <= inset_max_x and inset_min_y <= py <= inset_max_y]
+                            if filtered:
+                                dest_x, dest_y = random.choice(filtered)
+                            else:
+                                dest_x, dest_y = random.choice(all_pixels)
+                        else:
+                            dest_x, dest_y = random.choice(all_pixels)
+                    else:
+                        dest_x, dest_y = random.choice(all_pixels)
                     move_duration = random.uniform(action.get('min_move_delay', 0.2), action.get('max_move_delay', 0.5)) * time_multiplier
                     if numpy_available:
                         human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_duration)
@@ -782,15 +825,9 @@ def playback_macro():
                         mouse_controller.position = (dest_x, dest_y)
                     current_pos = (dest_x, dest_y)
                 elif action['type'] == 'loop_start':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
                     loops = random.randint(action.get('min_loops', 1), action.get('max_loops', 1))
                     loop_stack.append({'start': i, 'remaining': loops, 'name': action.get('name', '')})
                 elif action['type'] == 'loop_end':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
                     if not loop_stack or loop_stack[-1]['name'] != action.get('name', ''):
                         playback_active = False
                         root.after(0, lambda: update_status("Mismatched loop names. Playback stopped."))
@@ -804,9 +841,37 @@ def playback_macro():
                     else:
                         loop_stack.pop()
                 elif action['type'] == 'wait':
-                    interruptible_sleep(delay)
-                    if not playback_active:
-                        break
+                    pass  # delay already slept
+                elif action['type'] == 'if_color_start':
+                    if not pil_available:
+                        i += 1
+                        continue
+                    if action.get('check_at_mouse', False):
+                        x, y = mouse_controller.position
+                    else:
+                        x = action.get('x', 0)
+                        y = action.get('y', 0)
+                    expected_hex = action.get('expected_color')
+                    expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
+                    actual_color = ImageGrab.grab().getpixel((x, y))
+                    condition = actual_color == expected
+                    if not condition:
+                        else_i = find_next_if_part(i, 'else')
+                        if else_i != -1:
+                            i = else_i + 1
+                            continue
+                        else:
+                            end_i = find_next_if_part(i, 'end')
+                            if end_i != -1:
+                                i = end_i + 1
+                                continue
+                elif action['type'] == 'else':
+                    end_i = find_next_if_part(i, 'end')
+                    if end_i != -1:
+                        i = end_i + 1
+                        continue
+                elif action['type'] == 'if_end':
+                    pass  # just marker
                 i += 1
             rep += 1
             if repeat_mode == "Loops" and rep >= repeat_value:
@@ -904,6 +969,13 @@ def insert_action(action_type, after_iid=None):
         new_action['on_fail'] = 'continue'
     elif action_type == 'wait':
         pass  # Just delays
+    elif action_type == 'if_color_start':
+        new_action['expected_color'] = '#ffffff'
+        new_action['x'] = 0
+        new_action['y'] = 0
+        new_action['check_at_mouse'] = False
+    elif action_type in ['else', 'if_end']:
+        pass
     
     if after_iid is None:
         pos = len(actions)
@@ -1132,6 +1204,26 @@ def populate_editor(action):
         on_fail_combo.config(state='readonly')
         next_row += 1
         toggle_coord_state()  # Apply initial state based on checkbox
+    elif action['type'] == 'if_color_start':
+        hex_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        hex_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        capture_on_click_btn.grid(row=next_row, column=4, padx=5, pady=5)
+        next_row += 1
+        check_x_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        check_x_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        check_y_label.grid(row=next_row, column=2, padx=5, pady=5, sticky=tk.E)
+        check_y_entry.grid(row=next_row, column=3, padx=5, pady=5, sticky=tk.W)
+        capture_at_coord_btn.grid(row=next_row, column=4, padx=5, pady=5)
+        hex_entry.config(state='normal')
+        capture_on_click_btn.config(state='normal')
+        check_x_entry.config(state='normal')
+        check_y_entry.config(state='normal')
+        capture_at_coord_btn.config(state='normal')
+        next_row += 1
+        check_at_mouse_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        check_at_mouse_check.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        next_row += 1
+        toggle_coord_state()  # Apply initial state based on checkbox
     elif action['type'] == 'mouse_to_color':
         hex_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         hex_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
@@ -1186,6 +1278,8 @@ def populate_editor(action):
         next_row += 1
     elif action['type'] == 'wait':
         next_row += 0  # No specific fields, just delays
+    elif action['type'] in ['else', 'if_end']:
+        next_row += 0  # No specific fields
 
     # Show comment field (common to all types)
     comment_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
@@ -1335,6 +1429,15 @@ def on_type_change(event):
             for k in keys_to_del:
                 if k in action:
                     del action[k]
+        elif new_type == 'if_color_start':
+            action['expected_color'] = '#ffffff'
+            action['x'] = 0
+            action['y'] = 0
+            action['check_at_mouse'] = False
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail']
+            for k in keys_to_del:
+                if k in action:
+                    del action[k]
         elif new_type == 'mouse_to_color':
             action['expected_color'] = '#ffffff'
             action['min_x'] = 0
@@ -1367,6 +1470,11 @@ def on_type_change(event):
             for k in keys_to_del:
                 if k in action:
                     del action[k]
+        elif new_type in ['else', 'if_end']:
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            for k in keys_to_del:
+                if k in action:
+                    del action[k]
         populate_editor(action)
         update_tree()
 
@@ -1394,7 +1502,7 @@ def save_changes():
             action['key'] = key_var.get().strip()
             if not action['key']:
                 raise ValueError("Key cannot be empty.")
-        elif action['type'] == 'color_check' or action['type'] == 'mouse_to_color':
+        elif action['type'] == 'color_check' or action['type'] == 'mouse_to_color' or action['type'] == 'if_color_start':
             expected_color = hex_var.get().strip()
             if not expected_color.startswith('#') or len(expected_color) != 7:
                 raise ValueError("Invalid hex color format. Use #RRGGBB.")
@@ -1403,11 +1511,12 @@ def save_changes():
             except ValueError:
                 raise ValueError("Invalid hex color value.")
             action['expected_color'] = expected_color
-            on_fail = on_fail_var.get()
-            if on_fail not in ON_FAIL_OPTIONS:
-                raise ValueError("Invalid on_fail option.")
-            action['on_fail'] = on_fail
-            if action['type'] == 'color_check':
+            if action['type'] in ['color_check', 'mouse_to_color']:
+                on_fail = on_fail_var.get()
+                if on_fail not in ON_FAIL_OPTIONS:
+                    raise ValueError("Invalid on_fail option.")
+                action['on_fail'] = on_fail
+            if action['type'] in ['color_check', 'if_color_start']:
                 check_at_mouse = check_at_mouse_var.get()
                 action['check_at_mouse'] = check_at_mouse
                 if not check_at_mouse:
@@ -1449,6 +1558,8 @@ def save_changes():
             action['name'] = name
         elif action['type'] == 'wait':
             pass  # Just delays
+        elif action['type'] in ['else', 'if_end']:
+            pass
         action['comment'] = comment_var.get().strip()
     except ValueError as e:
         messagebox.showerror("Invalid Input", str(e) or "Invalid values entered.")
