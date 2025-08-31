@@ -24,6 +24,13 @@ try:
 except ImportError:
     pil_available = False
 
+# Attempt to import scipy.ndimage for connected components
+try:
+    import scipy.ndimage as ndimage
+    scipy_available = True
+except ImportError:
+    scipy_available = False
+
 # Warm up numpy random number generator to avoid delay on first use
 if numpy_available:
     np.random.seed(0)  # Dummy seed for warmup
@@ -271,7 +278,8 @@ def get_action_details(action):
         min_y = action.get('min_y', 0)
         max_y = action.get('max_y', 0)
         on_fail = action.get('on_fail', 'continue')
-        return f"Move to color {color} in region ({min_x}-{max_x}, {min_y}-{max_y}) on_fail: {on_fail}"
+        border_margin = action.get('border_margin_percent', 20)
+        return f"Move to color {color} in region ({min_x}-{max_x}, {min_y}-{max_y}) on_fail: {on_fail} border_margin: {border_margin}%"
     elif action['type'] == 'wait':
         min_d = action.get('min_delay', 0.0)
         max_d = action.get('max_delay', 0.0)
@@ -749,8 +757,7 @@ def playback_macro():
                         arr = np.array(im)
                         mask = np.all(arr == expected, axis=-1)
                         ys, xs = np.where(mask)
-                        for px, py in zip(xs, ys):
-                            matching.append((min_x + px, min_y + py))
+                        matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
                     else:
                         for px in range(width):
                             for py in range(height):
@@ -771,8 +778,7 @@ def playback_macro():
                                     arr = np.array(im)
                                     mask = np.all(arr == expected, axis=-1)
                                     ys, xs = np.where(mask)
-                                    for px, py in zip(xs, ys):
-                                        matching.append((min_x + px, min_y + py))
+                                    matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
                                 else:
                                     for px in range(width):
                                         for py in range(height):
@@ -793,31 +799,43 @@ def playback_macro():
                             loop_stack = []
                             i = 0
                             continue
-                    # Improved selection: inset by 10% from borders if possible
-                    all_pixels = matching
-                    if len(all_pixels) > 1:
-                        comp_min_x = min(p[0] for p in all_pixels)
-                        comp_max_x = max(p[0] for p in all_pixels)
-                        comp_min_y = min(p[1] for p in all_pixels)
-                        comp_max_y = max(p[1] for p in all_pixels)
+                    # Find largest connected component if possible
+                    if scipy_available and numpy_available and matching:
+                        labeled, num_features = ndimage.label(mask)
+                        if num_features > 0:
+                            sizes = np.bincount(labeled.ravel())[1:]
+                            if sizes.size > 0:
+                                largest_label = np.argmax(sizes) + 1
+                                ys, xs = np.where(labeled == largest_label)
+                                matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
+                    # Improved selection: If "big square" (based on bounding box size), shrink by 10% on each side (80% inner area) and pick random from inner matching pixels
+                    if matching:
+                        all_x = [p[0] for p in matching]
+                        all_y = [p[1] for p in matching]
+                        comp_min_x = min(all_x)
+                        comp_max_x = max(all_x)
+                        comp_min_y = min(all_y)
+                        comp_max_y = max(all_y)
                         comp_width = comp_max_x - comp_min_x + 1
                         comp_height = comp_max_y - comp_min_y + 1
-                        inset_w = comp_width * 0.05
-                        inset_h = comp_height * 0.05
-                        inset_min_x = comp_min_x + inset_w
-                        inset_max_x = comp_max_x - inset_w
-                        inset_min_y = comp_min_y + inset_h
-                        inset_max_y = comp_max_y - inset_h
-                        if inset_min_x <= inset_max_x and inset_min_y <= inset_max_y:
-                            filtered = [(px, py) for px, py in all_pixels if inset_min_x <= px <= inset_max_x and inset_min_y <= py <= inset_max_y]
-                            if filtered:
-                                dest_x, dest_y = random.choice(filtered)
+                        # Arbitrary threshold for "big" (adjust as needed, e.g., >1 pixel or larger)
+                        if comp_width > 20 and comp_height > 20:  # Consider it "big" if bounding box >20px in both dims
+                            margin_fraction = action.get('border_margin_percent', 20) / 100.0
+                            margin_x = comp_width * margin_fraction
+                            margin_y = comp_height * margin_fraction
+                            inner_min_x = comp_min_x + margin_x
+                            inner_max_x = comp_max_x - margin_x
+                            inner_min_y = comp_min_y + margin_y
+                            inner_max_y = comp_max_y - margin_y
+                            inner_matching = [(x, y) for x, y in matching if inner_min_x <= x <= inner_max_x and inner_min_y <= y <= inner_max_y]
+                            if inner_matching:
+                                dest_x, dest_y = random.choice(inner_matching)
                             else:
-                                dest_x, dest_y = random.choice(all_pixels)
+                                # Fallback if inner is empty (unlikely but safe)
+                                dest_x, dest_y = random.choice(matching)
                         else:
-                            dest_x, dest_y = random.choice(all_pixels)
-                    else:
-                        dest_x, dest_y = random.choice(all_pixels)
+                            # For small areas, pick any matching pixel
+                            dest_x, dest_y = random.choice(matching)
                     move_duration = random.uniform(action.get('min_move_delay', 0.2), action.get('max_move_delay', 0.5)) * time_multiplier
                     if numpy_available:
                         human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_duration)
@@ -967,6 +985,7 @@ def insert_action(action_type, after_iid=None):
         new_action['min_move_delay'] = 0.2
         new_action['max_move_delay'] = 0.5
         new_action['on_fail'] = 'continue'
+        new_action['border_margin_percent'] = 20
     elif action_type == 'wait':
         pass  # Just delays
     elif action_type == 'if_color_start':
@@ -1115,6 +1134,7 @@ def populate_editor(action):
     max_move_delay_var.set(f"{action.get('max_move_delay', 0.5):.3f}")
     on_fail_var.set(action.get('on_fail', 'abort' if action['type'] == 'color_check' else 'continue'))
     check_at_mouse_var.set(action.get('check_at_mouse', False))
+    border_margin_var.set(str(action.get('border_margin_percent', 20)))
 
     # Hide all type-specific widgets first
     key_label.grid_remove()
@@ -1151,6 +1171,8 @@ def populate_editor(action):
     on_fail_combo.grid_remove()
     check_at_mouse_label.grid_remove()
     check_at_mouse_check.grid_remove()
+    border_margin_label.grid_remove()
+    border_margin_entry.grid_remove()
 
     next_row = 2  # Start after common fields
 
@@ -1249,6 +1271,9 @@ def populate_editor(action):
         on_fail_combo.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         on_fail_combo.config(state='readonly')
         next_row += 1
+        border_margin_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        border_margin_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        next_row += 1
         hex_entry.config(state='normal')
         capture_on_click_btn.config(state='normal')
         min_x_entry.config(state='normal')
@@ -1258,6 +1283,7 @@ def populate_editor(action):
         capture_zone_btn.config(state='normal')
         min_move_delay_entry.config(state='normal')
         max_move_delay_entry.config(state='normal')
+        border_margin_entry.config(state='normal')
         show_preview(action.get('min_x', 0), action.get('max_x', 0), action.get('min_y', 0), action.get('max_y', 0))
         update_status("Previewing search region. Click on the preview to close.")
     elif action['type'] == 'loop_start':
@@ -1332,6 +1358,7 @@ def clear_editor():
     max_move_delay_var.set('')
     on_fail_var.set('')
     check_at_mouse_var.set(False)
+    border_margin_var.set('')
     min_delay_entry.config(state='disabled')
     max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
@@ -1355,6 +1382,7 @@ def clear_editor():
     capture_on_click_btn.config(state='disabled')
     capture_at_coord_btn.config(state='disabled')
     save_btn.config(state='disabled')
+    border_margin_entry.config(state='disabled')
     # Hide type-specific widgets
     key_label.grid_remove()
     key_entry.grid_remove()
@@ -1392,6 +1420,8 @@ def clear_editor():
     on_fail_combo.grid_remove()
     check_at_mouse_label.grid_remove()
     check_at_mouse_check.grid_remove()
+    border_margin_label.grid_remove()
+    border_margin_entry.grid_remove()
     delta_min_label.grid_remove()
     delta_min_entry.grid_remove()
     delta_max_label.grid_remove()
@@ -1406,7 +1436,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1415,7 +1445,7 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1425,7 +1455,7 @@ def on_type_change(event):
             action['y'] = 0
             action['on_fail'] = 'abort'
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1434,7 +1464,7 @@ def on_type_change(event):
             action['x'] = 0
             action['y'] = 0
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1447,6 +1477,7 @@ def on_type_change(event):
             action['min_move_delay'] = 0.2
             action['max_move_delay'] = 0.5
             action['on_fail'] = 'continue'
+            action['border_margin_percent'] = 20
             keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse']
             for k in keys_to_del:
                 if k in action:
@@ -1455,23 +1486,23 @@ def on_type_change(event):
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'wait':
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type in ['else', 'if_end']:
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1540,6 +1571,10 @@ def save_changes():
                     raise ValueError("Min move delay must be <= max move delay and both non-negative.")
                 action['min_move_delay'] = min_move_delay
                 action['max_move_delay'] = max_move_delay
+                border_margin = int(border_margin_var.get())
+                if border_margin < 0 or border_margin > 50:
+                    raise ValueError("Border margin percent must be between 0 and 50.")
+                action['border_margin_percent'] = border_margin
         elif action['type'] == 'loop_start':
             name = loop_name_var.get().strip()
             if not name:
@@ -2015,6 +2050,7 @@ delta_max_var = tk.StringVar(value="0.0")
 on_fail_var = tk.StringVar()
 check_at_mouse_var = tk.BooleanVar(value=False)
 check_at_mouse_var.trace('w', toggle_coord_state)
+border_margin_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
@@ -2111,6 +2147,10 @@ Tooltip(on_fail_combo, "Action if color doesn't match or not found: continue, wa
 check_at_mouse_label = ttk.Label(editor_frame, text="Check at Mouse:")
 check_at_mouse_check = ttk.Checkbutton(editor_frame, variable=check_at_mouse_var)
 Tooltip(check_at_mouse_check, "If checked, check color at current mouse position instead of fixed coordinate.")
+
+border_margin_label = ttk.Label(editor_frame, text="Border Margin (%):")
+border_margin_entry = ttk.Entry(editor_frame, textvariable=border_margin_var, width=15)
+Tooltip(border_margin_entry, "Percentage of border margin to avoid clicking near edges (0-50).")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
 save_btn.grid(row=7, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
