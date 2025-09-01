@@ -9,6 +9,8 @@ from pynput.keyboard import GlobalHotKeys
 from pynput.mouse import Controller as MouseController, Button
 import random  # For seeding randomness
 import copy
+import ctypes
+import platform
 
 # Required libraries
 import numpy as np
@@ -147,6 +149,21 @@ def interruptible_sleep(duration):
         if remaining > 0:
             time.sleep(min(0.001, remaining))
 
+def get_pixel_color(x, y):
+    if platform.system() == 'Windows':
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        hdc = user32.GetDC(0)  # Screen DC
+        color = gdi32.GetPixel(hdc, x, y)
+        user32.ReleaseDC(0, hdc)
+        r = color & 0xff
+        g = (color >> 8) & 0xff
+        b = (color >> 16) & 0xff
+        return (r, g, b)
+    else:
+        # Fallback to PIL
+        return ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+
 # Global variables
 actions = []  # List to store recorded/edited actions
 start_time = None
@@ -177,6 +194,7 @@ last_ts = None
 copied_actions = []  # Clipboard for copied actions
 drag_start_pos = None  # For detecting drag during clicks in recording
 drag_rect = None
+playback_event = threading.Event()  # For better interruptible sleep
 
 # Controllers
 kb_controller = KeyboardController()
@@ -235,13 +253,15 @@ def get_action_details(action):
         on_fail = action.get('on_fail', 'abort')
         on_success_press = action.get('on_success_press', None)
         success_str = f" on_success_press: {on_success_press}" if on_success_press else ""
+        tolerance = action.get('tolerance', 0)
+        tol_str = f" tolerance: {tolerance}" if tolerance > 0 else ""
         if action.get('check_at_mouse', False):
             pos = "at mouse"
         else:
             x = action.get('x', 0)
             y = action.get('y', 0)
             pos = f"at ({x}, {y})"
-        return f"Expected Color: {color} {pos} on_fail: {on_fail}{success_str}"
+        return f"Expected Color: {color} {pos} on_fail: {on_fail}{success_str}{tol_str}"
     elif action['type'] == 'loop_start':
         name = action.get('name', '')
         min_loops = action.get('min_loops', 1)
@@ -553,7 +573,7 @@ def find_next_if_part(current_i, part):
                 return j
     return -1
 
-def perform_key_action(key):
+def perform_key_action(key, hold_min=0.001, hold_max=0.3):
     items = []
     def get_key(kstr):
         if kstr.startswith('Key.'):
@@ -575,7 +595,7 @@ def perform_key_action(key):
         if itm is not None:
             ctrl.press(itm)
             pressed_items.append((ctrl, itm))
-    hold_duration = random.uniform(0.001, 0.3)
+    hold_duration = random.uniform(hold_min, hold_max)
     interruptible_sleep(hold_duration)
     for ctrl, itm in reversed(items):
         if itm is not None:
@@ -608,6 +628,7 @@ def playback_macro():
         return
     time_multiplier = 100.0 / speed_perc
     playback_active = True
+    playback_event.clear()
     pressed_items = []
     update_status("Playback starting in 3 seconds...")
     root.update()
@@ -679,12 +700,68 @@ def playback_macro():
                         y = action.get('y', 0)
                     expected_hex = action.get('expected_color')
                     expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
-                    # Optimized: Grab single pixel bbox for faster capture
-                    actual_color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
-                    if actual_color == expected:
-                        on_success_press = action.get('on_success_press', None)
-                        if on_success_press:
-                            perform_key_action(on_success_press)
+                    tolerance = action.get('tolerance', 0)
+
+                    def colors_close(c1, c2, tol):
+                        return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5 <= tol
+
+                    actual_color = get_pixel_color(x, y)
+                    if colors_close(actual_color, expected, tolerance):
+                        # Re-check immediately before action for accuracy
+                        actual_color = get_pixel_color(x, y)  # Near-instant second grab
+                        if colors_close(actual_color, expected, tolerance):
+                            on_success_press = action.get('on_success_press', None)
+                            if on_success_press:
+                                hold_min_ms = action.get('hold_min_ms', 1)
+                                hold_max_ms = action.get('hold_max_ms', 10)
+                                hold_min = hold_min_ms / 1000.0
+                                hold_max = hold_max_ms / 1000.0
+                                perform_key_action(on_success_press, hold_min=hold_min, hold_max=hold_max)
+                        else:
+                            # Optional: Brief retry loop (e.g., 3 attempts over 100ms)
+                            for _ in range(3):
+                                interruptible_sleep(0.03)
+                                actual_color = get_pixel_color(x, y)
+                                if colors_close(actual_color, expected, tolerance):
+                                    on_success_press = action.get('on_success_press', None)
+                                    if on_success_press:
+                                        hold_min_ms = action.get('hold_min_ms', 1)
+                                        hold_max_ms = action.get('hold_max_ms', 10)
+                                        hold_min = hold_min_ms / 1000.0
+                                        hold_max = hold_max_ms / 1000.0
+                                        perform_key_action(on_success_press, hold_min=hold_min, hold_max=hold_max)
+                                    break
+                            else:
+                                # Handle as fail
+                                on_fail = action.get('on_fail', 'abort')
+                                if on_fail == 'continue':
+                                    pass
+                                elif on_fail == 'wait':
+                                    root.after(0, lambda: update_status("Waiting for color match..."))
+                                    while playback_active:
+                                        actual_color = get_pixel_color(x, y)
+                                        if colors_close(actual_color, expected, tolerance):
+                                            on_success_press = action.get('on_success_press', None)
+                                            if on_success_press:
+                                                hold_min_ms = action.get('hold_min_ms', 1)
+                                                hold_max_ms = action.get('hold_max_ms', 10)
+                                                hold_min = hold_min_ms / 1000.0
+                                                hold_max = hold_max_ms / 1000.0
+                                                perform_key_action(on_success_press, hold_min=hold_min, hold_max=hold_max)
+                                            break
+                                        interruptible_sleep(0.1)
+                                    if not playback_active:
+                                        break
+                                elif on_fail == 'abort':
+                                    playback_active = False
+                                    root.after(0, lambda: messagebox.showinfo("Color Mismatch", "Color check failed. Playback stopped."))
+                                    root.after(0, lambda: update_status("Playback stopped due to color mismatch."))
+                                    root.after(0, update_ui_for_playback)
+                                    break
+                                elif on_fail == 'restart':
+                                    loop_stack = []
+                                    i = -1  # Will increment to 0
+                                    continue
                     else:
                         on_fail = action.get('on_fail', 'abort')
                         if on_fail == 'continue':
@@ -692,11 +769,15 @@ def playback_macro():
                         elif on_fail == 'wait':
                             root.after(0, lambda: update_status("Waiting for color match..."))
                             while playback_active:
-                                actual_color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
-                                if actual_color == expected:
+                                actual_color = get_pixel_color(x, y)
+                                if colors_close(actual_color, expected, tolerance):
                                     on_success_press = action.get('on_success_press', None)
                                     if on_success_press:
-                                        perform_key_action(on_success_press)
+                                        hold_min_ms = action.get('hold_min_ms', 1)
+                                        hold_max_ms = action.get('hold_max_ms', 10)
+                                        hold_min = hold_min_ms / 1000.0
+                                        hold_max = hold_max_ms / 1000.0
+                                        perform_key_action(on_success_press, hold_min=hold_min, hold_max=hold_max)
                                     break
                                 interruptible_sleep(0.1)
                             if not playback_active:
@@ -710,6 +791,7 @@ def playback_macro():
                         elif on_fail == 'restart':
                             loop_stack = []
                             i = -1  # Will increment to 0
+                            continue
                 elif action['type'] == 'mouse_to_color':
                     min_x = action.get('min_x', 0)
                     max_x = action.get('max_x', 1920)
@@ -890,7 +972,7 @@ def playback_macro():
                     expected_hex = action.get('expected_color')
                     expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
                     # Optimized: Grab single pixel bbox for faster capture
-                    actual_color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+                    actual_color = get_pixel_color(x, y)
                     condition = actual_color == expected
                     if not condition:
                         else_i = find_next_if_part(i, 'else')
@@ -927,6 +1009,7 @@ def stop_playback():
     global playback_active, pressed_items
     if playback_active:
         playback_active = False
+        playback_event.set()
         for controller, item in pressed_items:
             controller.release(item)
         pressed_items.clear()
@@ -986,6 +1069,9 @@ def insert_action(action_type, after_iid=None):
         new_action['y'] = 0  # Add default y
         new_action['on_fail'] = 'abort'
         new_action['check_at_mouse'] = False
+        new_action['tolerance'] = 0
+        new_action['hold_min_ms'] = 1
+        new_action['hold_max_ms'] = 10
     elif action_type == 'loop_start':
         new_action['name'] = 'loop1'
         new_action['min_loops'] = 1
@@ -1154,6 +1240,9 @@ def populate_editor(action):
     border_margin_var.set(str(action.get('border_margin_percent', 20)))
     selection_mode_var.set(action.get('selection_mode', 'random'))
     on_success_press_var.set(action.get('on_success_press', ''))
+    tolerance_var.set(str(action.get('tolerance', 0)))
+    hold_min_ms_var.set(str(action.get('hold_min_ms', 1)))
+    hold_max_ms_var.set(str(action.get('hold_max_ms', 10)))
 
     # Hide all type-specific widgets
     key_label.grid_remove()
@@ -1197,6 +1286,12 @@ def populate_editor(action):
     on_success_press_label.grid_remove()
     on_success_press_entry.grid_remove()
     on_success_capture_btn.grid_remove()
+    tolerance_label.grid_remove()
+    tolerance_entry.grid_remove()
+    hold_min_ms_label.grid_remove()
+    hold_min_ms_entry.grid_remove()
+    hold_max_ms_label.grid_remove()
+    hold_max_ms_entry.grid_remove()
 
     next_row = 2  # Start after common fields
 
@@ -1254,6 +1349,17 @@ def populate_editor(action):
         on_success_capture_btn.grid(row=next_row, column=4, padx=5, pady=5)
         on_success_press_entry.config(state='normal')
         on_success_capture_btn.config(state='normal')
+        next_row += 1
+        tolerance_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        tolerance_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        tolerance_entry.config(state='normal')
+        next_row += 1
+        hold_min_ms_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        hold_min_ms_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        hold_max_ms_label.grid(row=next_row, column=2, padx=5, pady=5, sticky=tk.E)
+        hold_max_ms_entry.grid(row=next_row, column=3, padx=5, pady=5, sticky=tk.W)
+        hold_min_ms_entry.config(state='normal')
+        hold_max_ms_entry.config(state='normal')
         next_row += 1
         toggle_coord_state()  # Apply initial state based on checkbox
     elif action['type'] == 'if_color_start':
@@ -1400,6 +1506,9 @@ def clear_editor():
     border_margin_var.set('')
     selection_mode_var.set('')
     on_success_press_var.set('')
+    tolerance_var.set('')
+    hold_min_ms_var.set('')
+    hold_max_ms_var.set('')
     min_delay_entry.config(state='disabled')
     max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
@@ -1427,6 +1536,9 @@ def clear_editor():
     selection_mode_combo.config(state='disabled')
     on_success_press_entry.config(state='disabled')
     on_success_capture_btn.config(state='disabled')
+    tolerance_entry.config(state='disabled')
+    hold_min_ms_entry.config(state='disabled')
+    hold_max_ms_entry.config(state='disabled')
     # Hide type-specific widgets
     key_label.grid_remove()
     key_entry.grid_remove()
@@ -1476,6 +1588,12 @@ def clear_editor():
     on_success_press_label.grid_remove()
     on_success_press_entry.grid_remove()
     on_success_capture_btn.grid_remove()
+    tolerance_label.grid_remove()
+    tolerance_entry.grid_remove()
+    hold_min_ms_label.grid_remove()
+    hold_min_ms_entry.grid_remove()
+    hold_max_ms_label.grid_remove()
+    hold_max_ms_entry.grid_remove()
     hide_preview()
 
 def on_type_change(event):
@@ -1485,7 +1603,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'mouse_move':
@@ -1493,7 +1611,7 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'color_check':
@@ -1502,6 +1620,9 @@ def on_type_change(event):
             action['y'] = 0
             action['on_fail'] = 'abort'
             action['check_at_mouse'] = False
+            action['tolerance'] = 0
+            action['hold_min_ms'] = 1
+            action['hold_max_ms'] = 10
             keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 action.pop(k, None)
@@ -1510,7 +1631,7 @@ def on_type_change(event):
             action['x'] = 0
             action['y'] = 0
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'mouse_to_color':
@@ -1524,28 +1645,28 @@ def on_type_change(event):
             action['on_fail'] = 'continue'
             action['border_margin_percent'] = 20
             action['selection_mode'] = 'random'
-            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end', 'on_success_press']
+            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'loop_start':
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'wait':
             action['on_end'] = 'continue'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type in ['else', 'if_end']:
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         populate_editor(action)
@@ -1610,6 +1731,16 @@ def save_changes():
                     action['on_success_press'] = on_success_press
                 else:
                     action.pop('on_success_press', None)
+                tolerance = int(tolerance_var.get())
+                if tolerance < 0 or tolerance > 255:
+                    raise ValueError("Tolerance must be between 0 and 255.")
+                action['tolerance'] = tolerance
+                hold_min_ms = int(hold_min_ms_var.get())
+                hold_max_ms = int(hold_max_ms_var.get())
+                if hold_min_ms < 1 or hold_max_ms < 1 or hold_min_ms > hold_max_ms or hold_max_ms > 1000:  # Cap to reasonable
+                    raise ValueError("Hold min/max ms must be 1-1000, min <= max.")
+                action['hold_min_ms'] = hold_min_ms
+                action['hold_max_ms'] = hold_max_ms
             if action['type'] == 'mouse_to_color':
                 min_move_delay = float(min_move_delay_var.get())
                 max_move_delay = float(max_move_delay_var.get())
@@ -1800,7 +1931,7 @@ def capture_color_on_click():
     time.sleep(3)
     def on_click(x, y, button, pressed):
         if pressed and button == Button.left:
-            color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+            color = get_pixel_color(x, y)
             hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
             hex_var.set(hex_color)
             # For color_check, set position; for mouse_to_color, just color (position ignored)
@@ -1823,7 +1954,7 @@ def capture_color_at_coord():
     update_status(f"Capturing color at ({x}, {y}) in 3 seconds...")
     root.update()
     time.sleep(3)
-    color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+    color = get_pixel_color(x, y)
     hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
     hex_var.set(hex_color)
     update_status("Color captured.")
@@ -2102,6 +2233,9 @@ check_at_mouse_var.trace('w', toggle_coord_state)
 border_margin_var = tk.StringVar()
 selection_mode_var = tk.StringVar()
 on_success_press_var = tk.StringVar()
+tolerance_var = tk.StringVar()
+hold_min_ms_var = tk.StringVar()
+hold_max_ms_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
@@ -2213,6 +2347,18 @@ Tooltip(on_success_press_entry, "Optional key or mouse button to press immediate
 
 on_success_capture_btn = ttk.Button(editor_frame, text="Capture Input", command=lambda: capture_input(on_success_press_var), state='disabled')
 Tooltip(on_success_capture_btn, "Capture a key or mouse button press for on success.")
+
+tolerance_label = ttk.Label(editor_frame, text="Color Tolerance (0=exact):")
+tolerance_entry = ttk.Entry(editor_frame, textvariable=tolerance_var, width=15)
+Tooltip(tolerance_entry, "Tolerance for color matching (Euclidean distance in RGB space, 0-255).")
+
+hold_min_ms_label = ttk.Label(editor_frame, text="Hold Min (ms):")
+hold_min_ms_entry = ttk.Entry(editor_frame, textvariable=hold_min_ms_var, width=10)
+Tooltip(hold_min_ms_entry, "Minimum hold duration for on_success_press (ms).")
+
+hold_max_ms_label = ttk.Label(editor_frame, text="Hold Max (ms):")
+hold_max_ms_entry = ttk.Entry(editor_frame, textvariable=hold_max_ms_var, width=10)
+Tooltip(hold_max_ms_entry, "Maximum hold duration for on_success_press (ms).")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
 save_btn.grid(row=7, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
