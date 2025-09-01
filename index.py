@@ -832,19 +832,23 @@ def playback_macro():
                             labeled2, num2 = ndimage.label(mask2)
                             for lbl in range(1, num_features + 1):
                                 comp_mask1 = (labeled1 == lbl)
-                                overlap = np.sum(comp_mask1 & mask2) / np.sum(comp_mask1) if np.sum(comp_mask1) > 0 else 0
-                                if overlap > 0.8:
-                                    com1 = ndimage.center_of_mass(comp_mask1)
+                                size1 = np.sum(comp_mask1)
+                                overlap_sum = np.sum(comp_mask1 & mask2)
+                                overlap = overlap_sum / size1 if size1 > 0 else 0
+                                if overlap == 1.0:
                                     overlapping_labels = np.unique(labeled2[comp_mask1])
                                     overlapping_labels = overlapping_labels[overlapping_labels > 0]
                                     if overlapping_labels.size > 0:
                                         overlaps = [np.sum(comp_mask1 & (labeled2 == l2)) for l2 in overlapping_labels]
                                         max_ol_idx = np.argmax(overlaps)
                                         l2_max = overlapping_labels[max_ol_idx]
-                                        com2 = ndimage.center_of_mass(labeled2 == l2_max)
-                                        dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
-                                        if dist < 5:
-                                            stationary_labels.append(lbl)
+                                        size2 = np.sum(labeled2 == l2_max)
+                                        if size1 == size2:
+                                            com1 = ndimage.center_of_mass(comp_mask1)
+                                            com2 = ndimage.center_of_mass(labeled2 == l2_max)
+                                            dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
+                                            if dist < 0.1:
+                                                stationary_labels.append(lbl)
                         else:
                             stationary_labels = list(range(1, num_features + 1))
                         if not stationary_labels:
@@ -907,19 +911,23 @@ def playback_macro():
                                         labeled2, num2 = ndimage.label(mask2)
                                         for lbl in range(1, num_features + 1):
                                             comp_mask1 = (labeled1 == lbl)
-                                            overlap = np.sum(comp_mask1 & mask2) / np.sum(comp_mask1) if np.sum(comp_mask1) > 0 else 0
-                                            if overlap > 0.8:
-                                                com1 = ndimage.center_of_mass(comp_mask1)
+                                            size1 = np.sum(comp_mask1)
+                                            overlap_sum = np.sum(comp_mask1 & mask2)
+                                            overlap = overlap_sum / size1 if size1 > 0 else 0
+                                            if overlap == 1.0:
                                                 overlapping_labels = np.unique(labeled2[comp_mask1])
                                                 overlapping_labels = overlapping_labels[overlapping_labels > 0]
                                                 if overlapping_labels.size > 0:
                                                     overlaps = [np.sum(comp_mask1 & (labeled2 == l2)) for l2 in overlapping_labels]
                                                     max_ol_idx = np.argmax(overlaps)
                                                     l2_max = overlapping_labels[max_ol_idx]
-                                                    com2 = ndimage.center_of_mass(labeled2 == l2_max)
-                                                    dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
-                                                    if dist < 5:
-                                                        stationary_labels.append(lbl)
+                                                    size2 = np.sum(labeled2 == l2_max)
+                                                    if size1 == size2:
+                                                        com1 = ndimage.center_of_mass(comp_mask1)
+                                                        com2 = ndimage.center_of_mass(labeled2 == l2_max)
+                                                        dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
+                                                        if dist < 0.1:
+                                                            stationary_labels.append(lbl)
                                     else:
                                         stationary_labels = list(range(1, num_features + 1))
                                     if not stationary_labels:
