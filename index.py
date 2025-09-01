@@ -10,79 +10,55 @@ from pynput.mouse import Controller as MouseController, Button
 import random  # For seeding randomness
 import copy
 
-# pip install numpy pillow scipy pynput
+# Required libraries
+import numpy as np
+from PIL import ImageGrab
+import scipy.ndimage as ndimage
 
-# Attempt to import numpy, set flag if unavailable
-try:
-    import numpy as np
-    numpy_available = True
-except ImportError:
-    numpy_available = False
+# WindMouse constants and function
+sqrt3 = np.sqrt(3)
+sqrt5 = np.sqrt(5)
 
-# Attempt to import PIL for color checking
-try:
-    from PIL import ImageGrab
-    pil_available = True
-except ImportError:
-    pil_available = False
-
-# Attempt to import scipy.ndimage for connected components
-try:
-    import scipy.ndimage as ndimage
-    scipy_available = True
-except ImportError:
-    scipy_available = False
-
-# Warm up numpy random number generator to avoid delay on first use
-if numpy_available:
-    np.random.seed(0)  # Dummy seed for warmup
-    np.random.random()  # Initialize RNG to prevent lag during first playback
-
-# WindMouse constants and function (only if numpy is available)
-if numpy_available:
-    sqrt3 = np.sqrt(3)
-    sqrt5 = np.sqrt(5)
-
-    def wind_mouse(start_x, start_y, dest_x, dest_y, G_0=9, W_0=3, M_0=15, D_0=12, move_mouse=lambda x,y: None):
-        '''
-        WindMouse algorithm. Calls the move_mouse kwarg with each new step.
-        Released under the terms of the GPLv3 license.
-        G_0 - magnitude of the gravitational force
-        W_0 - magnitude of the wind force fluctuations
-        M_0 - maximum step size (velocity clip threshold)
-        D_0 - distance where wind behavior changes from random to damped
-        '''
-        current_x, current_y = start_x, start_y
-        v_x = v_y = W_x = W_y = 0
-        while (dist := np.hypot(dest_x - start_x, dest_y - start_y)) >= 1:
-            W_mag = min(W_0, dist)
-            if dist >= D_0:
-                W_x = W_x / sqrt3 + (2 * np.random.random() - 1) * W_mag / sqrt5
-                W_y = W_y / sqrt3 + (2 * np.random.random() - 1) * W_mag / sqrt5
+def wind_mouse(start_x, start_y, dest_x, dest_y, G_0=9, W_0=3, M_0=15, D_0=12, move_mouse=lambda x,y: None):
+    '''
+    WindMouse algorithm. Calls the move_mouse kwarg with each new step.
+    Released under the terms of the GPLv3 license.
+    G_0 - magnitude of the gravitational force
+    W_0 - magnitude of the wind force fluctuations
+    M_0 - maximum step size (velocity clip threshold)
+    D_0 - distance where wind behavior changes from random to damped
+    '''
+    current_x, current_y = start_x, start_y
+    v_x = v_y = W_x = W_y = 0
+    while (dist := np.hypot(dest_x - start_x, dest_y - start_y)) >= 1:
+        W_mag = min(W_0, dist)
+        if dist >= D_0:
+            W_x = W_x / sqrt3 + (2 * np.random.random() - 1) * W_mag / sqrt5
+            W_y = W_y / sqrt3 + (2 * np.random.random() - 1) * W_mag / sqrt5
+        else:
+            W_x /= sqrt3
+            W_y /= sqrt3
+            if M_0 < 3:
+                M_0 = np.random.random() * 3 + 3
             else:
-                W_x /= sqrt3
-                W_y /= sqrt3
-                if M_0 < 3:
-                    M_0 = np.random.random() * 3 + 3
-                else:
-                    M_0 /= sqrt5
-            v_x += W_x + G_0 * (dest_x - start_x) / dist
-            v_y += W_y + G_0 * (dest_y - start_y) / dist
-            v_mag = np.hypot(v_x, v_y)
-            if v_mag > M_0:
-                v_clip = M_0 / 2 + np.random.random() * M_0 / 2
-                v_x = (v_x / v_mag) * v_clip
-                v_y = (v_y / v_mag) * v_clip
-            start_x += v_x
-            start_y += v_y
-            move_x = int(np.round(start_x))
-            move_y = int(np.round(start_y))
-            if current_x != move_x or current_y != move_y:
-                move_mouse(current_x := move_x, current_y := move_y)
-        return current_x, current_y
+                M_0 /= sqrt5
+        v_x += W_x + G_0 * (dest_x - start_x) / dist
+        v_y += W_y + G_0 * (dest_y - start_y) / dist
+        v_mag = np.hypot(v_x, v_y)
+        if v_mag > M_0:
+            v_clip = M_0 / 2 + np.random.random() * M_0 / 2
+            v_x = (v_x / v_mag) * v_clip
+            v_y = (v_y / v_mag) * v_clip
+        start_x += v_x
+        start_y += v_y
+        move_x = int(np.round(start_x))
+        move_y = int(np.round(start_y))
+        if current_x != move_x or current_y != move_y:
+            move_mouse(current_x := move_x, current_y := move_y)
+    return current_x, current_y
 
 def human_move(start_x, start_y, dest_x, dest_y, duration, seed=42):
-    if duration <= 0 or not numpy_available:
+    if duration <= 0:
         mouse_controller.position = (dest_x, dest_y)
         return
     # Use fixed parameters for consistency, but allow slight variation if desired
@@ -261,13 +237,15 @@ def get_action_details(action):
     elif action['type'] == 'color_check':
         color = action.get('expected_color', '#000000')
         on_fail = action.get('on_fail', 'abort')
+        on_success_press = action.get('on_success_press', None)
+        success_str = f" on_success_press: {on_success_press}" if on_success_press else ""
         if action.get('check_at_mouse', False):
             pos = "at mouse"
         else:
             x = action.get('x', 0)
             y = action.get('y', 0)
             pos = f"at ({x}, {y})"
-        return f"Expected Color: {color} {pos} on_fail: {on_fail}"
+        return f"Expected Color: {color} {pos} on_fail: {on_fail}{success_str}"
     elif action['type'] == 'loop_start':
         name = action.get('name', '')
         min_loops = action.get('min_loops', 1)
@@ -442,8 +420,6 @@ def start_recording():
         save_macro()
     update_status("Recording starts in 3 seconds...")
     status_label.config(background='#ffdddd', foreground='black')
-    if not numpy_available:
-        update_status("Warning: numpy not installed, mouse movements will be instant.")
     record_btn.config(state=tk.DISABLED)
     start_stop_btn.config(state=tk.DISABLED)
     root.update()
@@ -581,6 +557,36 @@ def find_next_if_part(current_i, part):
                 return j
     return -1
 
+def perform_key_action(key):
+    items = []
+    def get_key(kstr):
+        if kstr.startswith('Key.'):
+            return Key.__dict__.get(kstr.split('.')[-1])
+        return kstr if len(kstr) == 1 else None  # Assume single char or Key
+    if key.startswith('mouse.'):
+        button_name = key[6:]
+        button = Button.__dict__.get(button_name)
+        items = [(mouse_controller, button)]
+    elif ' + ' in key:
+        modifier_str, main_key_str = key.split(' + ')
+        modifier = get_key(modifier_str)
+        main_key = get_key(main_key_str)
+        items = [(kb_controller, modifier), (kb_controller, main_key)]
+    else:
+        key_obj = get_key(key)
+        items = [(kb_controller, key_obj)]
+    for ctrl, itm in items:
+        if itm is not None:
+            ctrl.press(itm)
+            pressed_items.append((ctrl, itm))
+    hold_duration = random.uniform(0.001, 0.3)
+    interruptible_sleep(hold_duration)
+    for ctrl, itm in reversed(items):
+        if itm is not None:
+            ctrl.release(itm)
+        if (ctrl, itm) in pressed_items:
+            pressed_items.remove((ctrl, itm))
+
 def playback_macro():
     global playback_active, playback_thread, pressed_items, repeat_mode, repeat_value
     if not actions:
@@ -608,10 +614,6 @@ def playback_macro():
     playback_active = True
     pressed_items = []
     update_status("Playback starting in 3 seconds...")
-    if not numpy_available:
-        update_status("Warning: numpy not installed, mouse movements will be instant.")
-    if not pil_available:
-        update_status("Warning: PIL not installed, color checks will be skipped.")
     root.update()
     interruptible_sleep(3)
     root.after(0, update_ui_for_playback)
@@ -637,35 +639,7 @@ def playback_macro():
                     break
                 control_types = ['if_color_start', 'else', 'if_end', 'loop_start', 'loop_end']
                 if action['type'] == 'key_action':
-                    key = action['key']
-                    items = []
-                    def get_key(kstr):
-                        if kstr.startswith('Key.'):
-                            return Key.__dict__.get(kstr.split('.')[-1])
-                        return kstr if len(kstr) == 1 else None  # Assume single char or Key
-                    if key.startswith('mouse.'):
-                        button_name = key[6:]
-                        button = Button.__dict__.get(button_name)
-                        items = [(mouse_controller, button)]
-                    elif ' + ' in key:
-                        modifier_str, main_key_str = key.split(' + ')
-                        modifier = get_key(modifier_str)
-                        main_key = get_key(main_key_str)
-                        items = [(kb_controller, modifier), (kb_controller, main_key)]
-                    else:
-                        key_obj = get_key(key)
-                        items = [(kb_controller, key_obj)]
-                    for ctrl, itm in items:
-                        if itm is not None:
-                            ctrl.press(itm)
-                            pressed_items.append((ctrl, itm))
-                    hold_duration = random.uniform(0.001, 0.3) * time_multiplier
-                    interruptible_sleep(hold_duration)
-                    for ctrl, itm in reversed(items):
-                        if itm is not None:
-                            ctrl.release(itm)
-                        if (ctrl, itm) in pressed_items:
-                            pressed_items.remove((ctrl, itm))
+                    perform_key_action(action['key'])
                 elif action['type'] == 'mouse_move':
                     min_x = action['min_x']
                     max_x = action['max_x']
@@ -678,7 +652,7 @@ def playback_macro():
                     else:
                         dest_x = random.uniform(min_x, max_x)
                         dest_y = random.uniform(min_y, max_y)
-                    dist = np.hypot(dest_x - current_pos[0], dest_y - current_pos[1]) if numpy_available else ((dest_x - current_pos[0])**2 + (dest_y - current_pos[1])**2)**0.5
+                    dist = np.hypot(dest_x - current_pos[0], dest_y - current_pos[1])
                     if dist > 0:
                         max_possible_sec_per_px = delay / dist
                         if max_possible_sec_per_px >= min_sec_per_px:
@@ -696,19 +670,13 @@ def playback_macro():
                         interruptible_sleep(pause_before)
                         if not playback_active:
                             break
-                        if numpy_available:
-                            human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_time)
-                        else:
-                            mouse_controller.position = (dest_x, dest_y)
+                        human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_time)
                         interruptible_sleep(pause_after)
                     else:
                         interruptible_sleep(delay)
                     current_pos = (dest_x, dest_y)
                 elif action['type'] == 'color_check':
-                    if not pil_available:
-                        update_status("Skipping color check: PIL not available.")
-                        i += 1
-                        continue
+                    start_check = time.time()
                     if action.get('check_at_mouse', False):
                         x, y = mouse_controller.position
                     else:
@@ -716,18 +684,29 @@ def playback_macro():
                         y = action.get('y', 0)
                     expected_hex = action.get('expected_color')
                     expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
-                    actual_color = ImageGrab.grab().getpixel((x, y))
-                    if actual_color != expected:
+                    # Optimized: Grab single pixel bbox for faster capture
+                    actual_color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+                    check_time = time.time() - start_check
+                    if actual_color == expected:
+                        on_success_press = action.get('on_success_press', None)
+                        if on_success_press:
+                            perform_key_action(on_success_press)
+                    else:
                         on_fail = action.get('on_fail', 'abort')
                         if on_fail == 'continue':
                             pass
                         elif on_fail == 'wait':
                             root.after(0, lambda: update_status("Waiting for color match..."))
                             while playback_active:
-                                actual_color = ImageGrab.grab().getpixel((x, y))
+                                start_check = time.time()
+                                actual_color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+                                check_time = time.time() - start_check
                                 if actual_color == expected:
+                                    on_success_press = action.get('on_success_press', None)
+                                    if on_success_press:
+                                        perform_key_action(on_success_press)
                                     break
-                                interruptible_sleep(0.1)
+                                interruptible_sleep(0.1 - check_time if 0.1 > check_time else 0.001)
                             if not playback_active:
                                 break
                         elif on_fail == 'abort':
@@ -741,10 +720,7 @@ def playback_macro():
                             i = 0
                             continue
                 elif action['type'] == 'mouse_to_color':
-                    if not pil_available:
-                        update_status("Skipping mouse to color: PIL not available.")
-                        i += 1
-                        continue
+                    start_check = time.time()
                     min_x = action.get('min_x', 0)
                     max_x = action.get('max_x', 1920)
                     min_y = action.get('min_y', 0)
@@ -760,16 +736,10 @@ def playback_macro():
                         i += 1
                         continue  # already on color
                     matching = []
-                    if numpy_available:
-                        arr = np.array(im)
-                        mask = np.all(arr == expected, axis=-1)
-                        ys, xs = np.where(mask)
-                        matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
-                    else:
-                        for px in range(width):
-                            for py in range(height):
-                                if im.getpixel((px, py)) == expected:
-                                    matching.append((min_x + px, min_y + py))
+                    arr = np.array(im)
+                    mask = np.all(arr == expected, axis=-1)
+                    ys, xs = np.where(mask)
+                    matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
                     if not matching:
                         on_fail = action.get('on_fail', 'continue')
                         if on_fail == 'continue':
@@ -779,21 +749,17 @@ def playback_macro():
                         elif on_fail == 'wait':
                             root.after(0, lambda: update_status("Waiting for color in region..."))
                             while playback_active:
+                                start_check = time.time()
                                 im = ImageGrab.grab(bbox=(min_x, min_y, max_x, max_y))
                                 matching = []
-                                if numpy_available:
-                                    arr = np.array(im)
-                                    mask = np.all(arr == expected, axis=-1)
-                                    ys, xs = np.where(mask)
-                                    matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
-                                else:
-                                    for px in range(width):
-                                        for py in range(height):
-                                            if im.getpixel((px, py)) == expected:
-                                                matching.append((min_x + px, min_y + py))
+                                arr = np.array(im)
+                                mask = np.all(arr == expected, axis=-1)
+                                ys, xs = np.where(mask)
+                                matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
+                                check_time = time.time() - start_check
                                 if matching:
                                     break
-                                interruptible_sleep(0.1)
+                                interruptible_sleep(0.1 - check_time if 0.1 > check_time else 0.001)
                             if not playback_active:
                                 break
                         elif on_fail == 'abort':
@@ -806,8 +772,8 @@ def playback_macro():
                             loop_stack = []
                             i = 0
                             continue
-                    # Find connected components if possible
-                    if scipy_available and numpy_available and matching:
+                    # Find connected components
+                    if matching:
                         labeled, num_features = ndimage.label(mask)
                         if num_features > 0:
                             sizes = np.bincount(labeled.ravel())[1:]
@@ -835,6 +801,7 @@ def playback_macro():
                                 # Set matching to chosen component
                                 ys, xs = np.where(labeled == chosen_lbl)
                                 matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
+                    check_time = time.time() - start_check
                     # Apply border margin to (possibly chosen) matching pixels
                     if matching:
                         all_x = [p[0] for p in matching]
@@ -848,14 +815,13 @@ def playback_macro():
                         comp_center_x = (comp_min_x + comp_max_x) / 2
                         comp_center_y = (comp_min_y + comp_max_y) / 2
                         border_margin_percent = action.get('border_margin_percent', 20)
-                        if border_margin_percent == 50:
-                            # Special case for 50%: pick closest to center from all matching
+                        percent = border_margin_percent / 100.0
+                        threshold = min(1.0, 2 * percent)  # Fixed to match expected margin
+                        if threshold == 1.0:  # Equivalent to old special case for 50%
+                            # Pick closest to center
                             distances = [(np.hypot(x - comp_center_x, y - comp_center_y), (x, y)) for x, y in matching]
                             dest_x, dest_y = min(distances, key=lambda d: d[0])[1]
                         else:
-                            percent = border_margin_percent / 100.0
-                            threshold = percent  # Normalized threshold (e.g., 0.2 for 20%)
-
                             # Collect points meeting the threshold
                             inner_matching = []
                             for x, y in matching:
@@ -890,10 +856,7 @@ def playback_macro():
                                     # Rare edge case: no points (shouldn't happen if matching non-empty)
                                     dest_x, dest_y = random.choice(matching)
                     move_duration = random.uniform(action.get('min_move_delay', 0.2), action.get('max_move_delay', 0.5)) * time_multiplier
-                    if numpy_available:
-                        human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_duration)
-                    else:
-                        mouse_controller.position = (dest_x, dest_y)
+                    human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_duration)
                     current_pos = (dest_x, dest_y)
                 elif action['type'] == 'loop_start':
                     loops = random.randint(action.get('min_loops', 1), action.get('max_loops', 1))
@@ -933,9 +896,7 @@ def playback_macro():
                         while playback_active:
                             interruptible_sleep(0.1)  # Check every 0.1s to allow stop
                 elif action['type'] == 'if_color_start':
-                    if not pil_available:
-                        i += 1
-                        continue
+                    start_check = time.time()
                     if action.get('check_at_mouse', False):
                         x, y = mouse_controller.position
                     else:
@@ -943,7 +904,9 @@ def playback_macro():
                         y = action.get('y', 0)
                     expected_hex = action.get('expected_color')
                     expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
-                    actual_color = ImageGrab.grab().getpixel((x, y))
+                    # Optimized: Grab single pixel bbox for faster capture
+                    actual_color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
+                    check_time = time.time() - start_check
                     condition = actual_color == expected
                     if not condition:
                         else_i = find_next_if_part(i, 'else')
@@ -1209,6 +1172,7 @@ def populate_editor(action):
     check_at_mouse_var.set(action.get('check_at_mouse', False))
     border_margin_var.set(str(action.get('border_margin_percent', 20)))
     selection_mode_var.set(action.get('selection_mode', 'random'))
+    on_success_press_var.set(action.get('on_success_press', ''))
 
     # Hide all type-specific widgets first
     key_label.grid_remove()
@@ -1249,6 +1213,9 @@ def populate_editor(action):
     border_margin_entry.grid_remove()
     selection_mode_label.grid_remove()
     selection_mode_combo.grid_remove()
+    on_success_press_label.grid_remove()
+    on_success_press_entry.grid_remove()
+    on_success_capture_btn.grid_remove()
 
     next_row = 2  # Start after common fields
 
@@ -1300,6 +1267,12 @@ def populate_editor(action):
         on_fail_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         on_fail_combo.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         on_fail_combo.config(state='readonly')
+        next_row += 1
+        on_success_press_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        on_success_press_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        on_success_capture_btn.grid(row=next_row, column=4, padx=5, pady=5)
+        on_success_press_entry.config(state='normal')
+        on_success_capture_btn.config(state='normal')
         next_row += 1
         toggle_coord_state()  # Apply initial state based on checkbox
     elif action['type'] == 'if_color_start':
@@ -1445,6 +1418,7 @@ def clear_editor():
     check_at_mouse_var.set(False)
     border_margin_var.set('')
     selection_mode_var.set('')
+    on_success_press_var.set('')
     min_delay_entry.config(state='disabled')
     max_delay_entry.config(state='disabled')
     type_combo.config(state='disabled')
@@ -1470,6 +1444,8 @@ def clear_editor():
     save_btn.config(state='disabled')
     border_margin_entry.config(state='disabled')
     selection_mode_combo.config(state='disabled')
+    on_success_press_entry.config(state='disabled')
+    on_success_capture_btn.config(state='disabled')
     # Hide type-specific widgets
     key_label.grid_remove()
     key_entry.grid_remove()
@@ -1516,6 +1492,9 @@ def clear_editor():
     delta_max_label.grid_remove()
     delta_max_entry.grid_remove()
     apply_batch_btn.grid_remove()
+    on_success_press_label.grid_remove()
+    on_success_press_entry.grid_remove()
+    on_success_capture_btn.grid_remove()
     hide_preview()
 
 def on_type_change(event):
@@ -1525,7 +1504,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1534,7 +1513,7 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1553,7 +1532,7 @@ def on_type_change(event):
             action['x'] = 0
             action['y'] = 0
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1568,7 +1547,7 @@ def on_type_change(event):
             action['on_fail'] = 'continue'
             action['border_margin_percent'] = 20
             action['selection_mode'] = 'random'
-            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end']
+            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1576,24 +1555,24 @@ def on_type_change(event):
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'wait':
             action['on_end'] = 'continue'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type in ['else', 'if_end']:
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1655,6 +1634,12 @@ def save_changes():
                         del action['x']
                     if 'y' in action:
                         del action['y']
+            if action['type'] == 'color_check':
+                on_success_press = on_success_press_var.get().strip()
+                if on_success_press:
+                    action['on_success_press'] = on_success_press
+                elif 'on_success_press' in action:
+                    del action['on_success_press']
             if action['type'] == 'mouse_to_color':
                 min_move_delay = float(min_move_delay_var.get())
                 max_move_delay = float(max_move_delay_var.get())
@@ -1726,7 +1711,7 @@ def apply_batch_delay():
     else:
         update_status("No mouse move actions selected to adjust.")
 
-def capture_input():
+def capture_input(var):
     modifier = None
     def on_capture_press(key):
         nonlocal modifier
@@ -1738,9 +1723,9 @@ def capture_input():
             return
         else:
             if modifier:
-                key_var.set(f"{modifier} + {key_str}")
+                var.set(f"{modifier} + {key_str}")
             else:
-                key_var.set(key_str)
+                var.set(key_str)
             update_status("Input captured.")
             stop_capture()
             return False
@@ -1751,7 +1736,7 @@ def capture_input():
 
     def on_capture_click(x, y, button, pressed):
         if pressed:
-            key_var.set(f"mouse.{str(button).split('.')[-1]}")
+            var.set(f"mouse.{str(button).split('.')[-1]}")
             update_status("Mouse input captured.")
             stop_capture()
         return False
@@ -1837,9 +1822,6 @@ def capture_zone():
     update_status("Hold left mouse and drag to select zone...")
 
 def capture_color_on_click():
-    if not pil_available:
-        messagebox.showwarning("PIL not available", "Cannot capture color without PIL.")
-        return
     global capture_listener_mouse
     if capture_listener_mouse:
         capture_listener_mouse.stop()
@@ -1848,7 +1830,7 @@ def capture_color_on_click():
     time.sleep(3)
     def on_click(x, y, button, pressed):
         if pressed and button == Button.left:
-            color = ImageGrab.grab().getpixel((x, y))
+            color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
             hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
             hex_var.set(hex_color)
             # For color_check, set position; for mouse_to_color, just color (position ignored)
@@ -1862,9 +1844,6 @@ def capture_color_on_click():
     capture_listener_mouse.start()
 
 def capture_color_at_coord():
-    if not pil_available:
-        messagebox.showwarning("PIL not available", "Cannot capture color without PIL.")
-        return
     try:
         x = int(check_x_var.get())
         y = int(check_y_var.get())
@@ -1874,7 +1853,7 @@ def capture_color_at_coord():
     update_status(f"Capturing color at ({x}, {y}) in 3 seconds...")
     root.update()
     time.sleep(3)
-    color = ImageGrab.grab().getpixel((x, y))
+    color = ImageGrab.grab(bbox=(x, y, x+1, y+1)).getpixel((0, 0))
     hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
     hex_var.set(hex_color)
     update_status("Color captured.")
@@ -2030,9 +2009,6 @@ root.config(menu=menubar)
 root.bind("<Control-n>", lambda e: new_macro())
 root.bind("<Control-o>", lambda e: load_macro())
 root.bind("<Control-s>", lambda e: save_macro())
-root.bind("<Control-c>", lambda e: copy_selected())
-root.bind("<Control-v>", lambda e: paste_smart())
-root.bind("<Delete>", lambda e: delete_selected())
 
 # Status label
 status_label = ttk.Label(root, text="Ready")
@@ -2114,6 +2090,11 @@ tree.tag_configure('odd', background='#ffffff')
 tree.tag_configure('drop_target', background='lightblue')
 Tooltip(tree, "List of actions. Right-click to add/insert/delete. Drag to reorder. Select to edit.")
 
+# Bind tree-specific shortcuts
+tree.bind("<Control-c>", lambda e: copy_selected())
+tree.bind("<Control-v>", lambda e: paste_smart())
+tree.bind("<Delete>", lambda e: delete_selected())
+
 # Scrollbar for treeview
 scrollbar = ttk.Scrollbar(root, orient="vertical", command=tree.yview)
 tree.configure(yscroll=scrollbar.set)
@@ -2150,6 +2131,7 @@ check_at_mouse_var = tk.BooleanVar(value=False)
 check_at_mouse_var.trace('w', toggle_coord_state)
 border_margin_var = tk.StringVar()
 selection_mode_var = tk.StringVar()
+on_success_press_var = tk.StringVar()
 
 # Fields with tooltips (grid only common ones initially; type-specific gridded in populate_editor)
 min_delay_label = ttk.Label(editor_frame, text="Min Delay (s):")
@@ -2175,7 +2157,7 @@ Tooltip(type_combo, "Type of action: key press, mouse movement, color check, loo
 key_label = ttk.Label(editor_frame, text="Key:")
 key_entry = ttk.Entry(editor_frame, textvariable=key_var, state='disabled', width=15)
 Tooltip(key_entry, "The key or button for this action.")
-capture_btn = ttk.Button(editor_frame, text="Capture Input", command=capture_input, state='disabled')
+capture_btn = ttk.Button(editor_frame, text="Capture Input", command=lambda: capture_input(key_var), state='disabled')
 Tooltip(capture_btn, "Capture a key or mouse button press.")
 
 min_x_label = ttk.Label(editor_frame, text="Min X:")
@@ -2254,6 +2236,13 @@ Tooltip(border_margin_entry, "Percentage of border margin to avoid clicking near
 selection_mode_label = ttk.Label(editor_frame, text="Selection Mode:")
 selection_mode_combo = ttk.Combobox(editor_frame, values=SELECTION_MODES, state='disabled', textvariable=selection_mode_var)
 Tooltip(selection_mode_combo, "How to select color mass: random (any component), closest (to mouse), furthest (from mouse).")
+
+on_success_press_label = ttk.Label(editor_frame, text="On Success Press:")
+on_success_press_entry = ttk.Entry(editor_frame, textvariable=on_success_press_var, width=15)
+Tooltip(on_success_press_entry, "Optional key or mouse button to press immediately if color matches (e.g., 'mouse.left').")
+
+on_success_capture_btn = ttk.Button(editor_frame, text="Capture Input", command=lambda: capture_input(on_success_press_var), state='disabled')
+Tooltip(on_success_capture_btn, "Capture a key or mouse button press for on success.")
 
 save_btn = ttk.Button(editor_frame, text="Save Changes", command=save_changes, state='disabled')
 save_btn.grid(row=7, column=0, columnspan=5, pady=10)  # Always gridded, but state disabled when not needed
