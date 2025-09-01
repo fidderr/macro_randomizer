@@ -289,7 +289,8 @@ def get_action_details(action):
     elif action['type'] == 'wait':
         min_d = action.get('min_delay', 0.0)
         max_d = action.get('max_delay', 0.0)
-        return f"Wait {min_d:.3f}-{max_d:.3f}s"
+        on_end = action.get('on_end', 'continue')
+        return f"Wait {min_d:.3f}-{max_d:.3f}s then {on_end}"
     elif action['type'] == 'if_color_start':
         color = action.get('expected_color', '#000000')
         if action.get('check_at_mouse', False):
@@ -844,21 +845,50 @@ def playback_macro():
                         comp_max_y = max(all_y)
                         comp_width = comp_max_x - comp_min_x + 1
                         comp_height = comp_max_y - comp_min_y + 1
-                        if comp_width > 20 and comp_height > 20:  # Consider it "big" if bounding box >20px in both dims
-                            margin_fraction = action.get('border_margin_percent', 20) / 100.0 / 2  # Divide by 2 since margin on each side
-                            margin_x = comp_width * margin_fraction
-                            margin_y = comp_height * margin_fraction
-                            inner_min_x = comp_min_x + margin_x
-                            inner_max_x = comp_max_x - margin_x
-                            inner_min_y = comp_min_y + margin_y
-                            inner_max_y = comp_max_y - margin_y
-                            inner_matching = [(x, y) for x, y in matching if inner_min_x <= x <= inner_max_x and inner_min_y <= y <= inner_max_y]
+                        comp_center_x = (comp_min_x + comp_max_x) / 2
+                        comp_center_y = (comp_min_y + comp_max_y) / 2
+                        border_margin_percent = action.get('border_margin_percent', 20)
+                        if border_margin_percent == 50:
+                            # Special case for 50%: pick closest to center from all matching
+                            distances = [(np.hypot(x - comp_center_x, y - comp_center_y), (x, y)) for x, y in matching]
+                            dest_x, dest_y = min(distances, key=lambda d: d[0])[1]
+                        else:
+                            percent = border_margin_percent / 100.0
+                            threshold = percent  # Normalized threshold (e.g., 0.2 for 20%)
+
+                            # Collect points meeting the threshold
+                            inner_matching = []
+                            for x, y in matching:
+                                dist_x = min(x - comp_min_x, comp_max_x - x)
+                                dist_y = min(y - comp_min_y, comp_max_y - y)
+                                norm_x = (2 * dist_x / comp_width) if comp_width > 0 else 0.0
+                                norm_y = (2 * dist_y / comp_height) if comp_height > 0 else 0.0
+                                min_norm = min(norm_x, norm_y)
+                                if min_norm >= threshold:
+                                    inner_matching.append((x, y))
+
                             if inner_matching:
                                 dest_x, dest_y = random.choice(inner_matching)
                             else:
-                                dest_x, dest_y = random.choice(matching)
-                        else:
-                            dest_x, dest_y = random.choice(matching)
+                                # Fallback: Find max achievable min_norm and pick random from those points
+                                max_min_norm = -1.0
+                                candidates = []
+                                for x, y in matching:
+                                    dist_x = min(x - comp_min_x, comp_max_x - x)
+                                    dist_y = min(y - comp_min_y, comp_max_y - y)
+                                    norm_x = (2 * dist_x / comp_width) if comp_width > 0 else 0.0
+                                    norm_y = (2 * dist_y / comp_height) if comp_height > 0 else 0.0
+                                    min_norm = min(norm_x, norm_y)
+                                    if min_norm > max_min_norm:
+                                        max_min_norm = min_norm
+                                        candidates = [(x, y)]
+                                    elif min_norm == max_min_norm:
+                                        candidates.append((x, y))
+                                if candidates:
+                                    dest_x, dest_y = random.choice(candidates)
+                                else:
+                                    # Rare edge case: no points (shouldn't happen if matching non-empty)
+                                    dest_x, dest_y = random.choice(matching)
                     move_duration = random.uniform(action.get('min_move_delay', 0.2), action.get('max_move_delay', 0.5)) * time_multiplier
                     if numpy_available:
                         human_move(current_pos[0], current_pos[1], dest_x, dest_y, move_duration)
@@ -882,7 +912,26 @@ def playback_macro():
                     else:
                         loop_stack.pop()
                 elif action['type'] == 'wait':
-                    pass  # delay already slept
+                    interruptible_sleep(delay)
+                    if not playback_active:
+                        break
+                    on_end = action.get('on_end', 'continue')
+                    if on_end == 'continue':
+                        pass
+                    elif on_end == 'abort':
+                        playback_active = False
+                        root.after(0, lambda: messagebox.showinfo("Wait Ended", "Wait completed. Playback aborted."))
+                        root.after(0, lambda: update_status("Playback aborted after wait."))
+                        root.after(0, update_ui_for_playback)
+                        break
+                    elif on_end == 'restart':
+                        loop_stack = []
+                        i = 0
+                        continue
+                    elif on_end == 'wait':
+                        root.after(0, lambda: update_status("Infinite wait started. Stop manually."))
+                        while playback_active:
+                            interruptible_sleep(0.1)  # Check every 0.1s to allow stop
                 elif action['type'] == 'if_color_start':
                     if not pil_available:
                         i += 1
@@ -1011,7 +1060,7 @@ def insert_action(action_type, after_iid=None):
         new_action['border_margin_percent'] = 20
         new_action['selection_mode'] = 'random'
     elif action_type == 'wait':
-        pass  # Just delays
+        new_action['on_end'] = 'continue'
     elif action_type == 'if_color_start':
         new_action['expected_color'] = '#ffffff'
         new_action['x'] = 0
@@ -1334,7 +1383,12 @@ def populate_editor(action):
         loop_name_entry.config(state='normal')
         next_row += 1
     elif action['type'] == 'wait':
-        next_row += 0  # No specific fields, just delays
+        on_fail_label.config(text="After Wait:")
+        on_fail_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        on_fail_combo.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        on_fail_combo.config(state='readonly')
+        on_fail_var.set(action.get('on_end', 'continue'))
+        next_row += 1
     elif action['type'] in ['else', 'if_end']:
         next_row += 0  # No specific fields
 
@@ -1471,7 +1525,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1480,7 +1534,7 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1490,7 +1544,7 @@ def on_type_change(event):
             action['y'] = 0
             action['on_fail'] = 'abort'
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1499,7 +1553,7 @@ def on_type_change(event):
             action['x'] = 0
             action['y'] = 0
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1514,7 +1568,7 @@ def on_type_change(event):
             action['on_fail'] = 'continue'
             action['border_margin_percent'] = 20
             action['selection_mode'] = 'random'
-            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse']
+            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1522,23 +1576,24 @@ def on_type_change(event):
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type == 'wait':
+            action['on_end'] = 'continue'
             keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
         elif new_type in ['else', 'if_end']:
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end']
             for k in keys_to_del:
                 if k in action:
                     del action[k]
@@ -1632,7 +1687,10 @@ def save_changes():
                 raise ValueError("Loop name cannot be empty.")
             action['name'] = name
         elif action['type'] == 'wait':
-            pass  # Just delays
+            on_end = on_fail_var.get()
+            if on_end not in ON_FAIL_OPTIONS:
+                raise ValueError("Invalid after wait option.")
+            action['on_end'] = on_end
         elif action['type'] in ['else', 'if_end']:
             pass
         action['comment'] = comment_var.get().strip()
