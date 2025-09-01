@@ -249,7 +249,8 @@ def get_action_details(action):
         max_y = action.get('max_y', 0)
         return f"Position: ({min_x}-{max_x}, {min_y}-{max_y})"
     elif action['type'] == 'color_check':
-        color = action.get('expected_color', '#000000')
+        colors = action.get('expected_colors', ['#000000'])
+        color_str = ', '.join(colors)
         on_fail = action.get('on_fail', 'abort')
         on_success_press = action.get('on_success_press', None)
         success_str = f" on_success_press: {on_success_press}" if on_success_press else ""
@@ -261,7 +262,7 @@ def get_action_details(action):
             x = action.get('x', 0)
             y = action.get('y', 0)
             pos = f"at ({x}, {y})"
-        return f"Expected Color: {color} {pos} on_fail: {on_fail}{success_str}{tol_str}"
+        return f"Expected Colors: {color_str} {pos} on_fail: {on_fail}{success_str}{tol_str}"
     elif action['type'] == 'loop_start':
         name = action.get('name', '')
         min_loops = action.get('min_loops', 1)
@@ -271,15 +272,18 @@ def get_action_details(action):
         name = action.get('name', '')
         return f"End Loop '{name}'"
     elif action['type'] == 'mouse_to_color':
-        color = action.get('expected_color', '#000000')
+        colors = action.get('expected_colors', ['#000000'])
+        color_str = ', '.join(colors)
+        on_fail = action.get('on_fail', 'continue')
+        border_margin = action.get('border_margin_percent', 20)
+        selection_mode = action.get('selection_mode', 'random')
+        stationary_only = action.get('stationary_only', False)
+        stat_str = " (stationary only)" if stationary_only else ""
         min_x = action.get('min_x', 0)
         max_x = action.get('max_x', 0)
         min_y = action.get('min_y', 0)
         max_y = action.get('max_y', 0)
-        on_fail = action.get('on_fail', 'continue')
-        border_margin = action.get('border_margin_percent', 20)
-        selection_mode = action.get('selection_mode', 'random')
-        return f"Move to color {color} in region ({min_x}-{max_x}, {min_y}-{max_y}) on_fail: {on_fail} border_margin: {border_margin}% selection_mode: {selection_mode}"
+        return f"Move to colors {color_str}{stat_str} in region ({min_x}-{max_x}, {min_y}-{max_y}) on_fail: {on_fail} border_margin: {border_margin}% selection_mode: {selection_mode}"
     elif action['type'] == 'wait':
         min_d = action.get('min_delay', 0.0)
         max_d = action.get('max_delay', 0.0)
@@ -654,7 +658,6 @@ def playback_macro():
                 interruptible_sleep(delay)
                 if not playback_active:
                     break
-                control_types = ['if_color_start', 'else', 'if_end', 'loop_start', 'loop_end']
                 if action['type'] == 'key_action':
                     perform_key_action(action['key'])
                 elif action['type'] == 'mouse_move':
@@ -698,18 +701,20 @@ def playback_macro():
                     else:
                         x = action.get('x', 0)
                         y = action.get('y', 0)
-                    expected_hex = action.get('expected_color')
-                    expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
+                    expected_colors = action.get('expected_colors', [action.get('expected_color', '#000000')])
+                    expected_rgb_list = [tuple(int(hex_color[j:j+2], 16) for j in (1, 3, 5)) for hex_color in expected_colors]
                     tolerance = action.get('tolerance', 0)
 
                     def colors_close(c1, c2, tol):
                         return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5 <= tol
 
                     actual_color = get_pixel_color(x, y)
-                    if colors_close(actual_color, expected, tolerance):
+                    match = any(colors_close(actual_color, expected, tolerance) for expected in expected_rgb_list)
+                    if match:
                         # Re-check immediately before action for accuracy
                         actual_color = get_pixel_color(x, y)  # Near-instant second grab
-                        if colors_close(actual_color, expected, tolerance):
+                        match = any(colors_close(actual_color, expected, tolerance) for expected in expected_rgb_list)
+                        if match:
                             on_success_press = action.get('on_success_press', None)
                             if on_success_press:
                                 hold_min_ms = action.get('hold_min_ms', 1)
@@ -722,7 +727,8 @@ def playback_macro():
                             for _ in range(3):
                                 interruptible_sleep(0.03)
                                 actual_color = get_pixel_color(x, y)
-                                if colors_close(actual_color, expected, tolerance):
+                                match = any(colors_close(actual_color, expected, tolerance) for expected in expected_rgb_list)
+                                if match:
                                     on_success_press = action.get('on_success_press', None)
                                     if on_success_press:
                                         hold_min_ms = action.get('hold_min_ms', 1)
@@ -740,7 +746,8 @@ def playback_macro():
                                     root.after(0, lambda: update_status("Waiting for color match..."))
                                     while playback_active:
                                         actual_color = get_pixel_color(x, y)
-                                        if colors_close(actual_color, expected, tolerance):
+                                        match = any(colors_close(actual_color, expected, tolerance) for expected in expected_rgb_list)
+                                        if match:
                                             on_success_press = action.get('on_success_press', None)
                                             if on_success_press:
                                                 hold_min_ms = action.get('hold_min_ms', 1)
@@ -760,7 +767,7 @@ def playback_macro():
                                     break
                                 elif on_fail == 'restart':
                                     loop_stack = []
-                                    i = -1  # Will increment to 0
+                                    i = 0
                                     continue
                     else:
                         on_fail = action.get('on_fail', 'abort')
@@ -770,7 +777,8 @@ def playback_macro():
                             root.after(0, lambda: update_status("Waiting for color match..."))
                             while playback_active:
                                 actual_color = get_pixel_color(x, y)
-                                if colors_close(actual_color, expected, tolerance):
+                                match = any(colors_close(actual_color, expected, tolerance) for expected in expected_rgb_list)
+                                if match:
                                     on_success_press = action.get('on_success_press', None)
                                     if on_success_press:
                                         hold_min_ms = action.get('hold_min_ms', 1)
@@ -790,28 +798,82 @@ def playback_macro():
                             break
                         elif on_fail == 'restart':
                             loop_stack = []
-                            i = -1  # Will increment to 0
+                            i = 0
                             continue
                 elif action['type'] == 'mouse_to_color':
                     min_x = action.get('min_x', 0)
                     max_x = action.get('max_x', 1920)
                     min_y = action.get('min_y', 0)
                     max_y = action.get('max_y', 1080)
-                    im = ImageGrab.grab(bbox=(min_x, min_y, max_x, max_y))
-                    width, height = im.size
-                    expected_hex = action.get('expected_color', '#ffffff')
-                    expected = tuple(int(expected_hex[j:j+2], 16) for j in (1, 3, 5))
-                    cx, cy = mouse_controller.position
-                    rel_x = cx - min_x
-                    rel_y = cy - min_y
-                    if 0 <= rel_x < width and 0 <= rel_y < height and im.getpixel((rel_x, rel_y)) == expected:
-                        i += 1
-                        continue  # already on color
+                    bbox = (min_x, min_y, max_x, max_y)
+                    stationary_only = action.get('stationary_only', False)
+                    if stationary_only:
+                        im1 = ImageGrab.grab(bbox=bbox)
+                        interruptible_sleep(0.1)
+                        if not playback_active:
+                            break
+                        im2 = ImageGrab.grab(bbox=bbox)
+                    else:
+                        im1 = ImageGrab.grab(bbox=bbox)
+                        im2 = None
+                    width, height = im1.size
+                    arr1 = np.array(im1)
+                    arr2 = np.array(im2) if im2 else None
                     matching = []
-                    arr = np.array(im)
-                    mask = np.all(arr == expected, axis=-1)
-                    ys, xs = np.where(mask)
-                    matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
+                    for hex_color in action.get('expected_colors', ['#ffffff']):
+                        expected = tuple(int(hex_color[j:j+2], 16) for j in (1, 3, 5))
+                        mask1 = np.all(arr1 == expected, axis=-1)
+                        labeled1, num_features = ndimage.label(mask1)
+                        if num_features == 0:
+                            continue
+                        stationary_labels = []
+                        if stationary_only:
+                            mask2 = np.all(arr2 == expected, axis=-1)
+                            labeled2, num2 = ndimage.label(mask2)
+                            for lbl in range(1, num_features + 1):
+                                comp_mask1 = (labeled1 == lbl)
+                                overlap = np.sum(comp_mask1 & mask2) / np.sum(comp_mask1) if np.sum(comp_mask1) > 0 else 0
+                                if overlap > 0.8:
+                                    com1 = ndimage.center_of_mass(comp_mask1)
+                                    overlapping_labels = np.unique(labeled2[comp_mask1])
+                                    overlapping_labels = overlapping_labels[overlapping_labels > 0]
+                                    if overlapping_labels.size > 0:
+                                        overlaps = [np.sum(comp_mask1 & (labeled2 == l2)) for l2 in overlapping_labels]
+                                        max_ol_idx = np.argmax(overlaps)
+                                        l2_max = overlapping_labels[max_ol_idx]
+                                        com2 = ndimage.center_of_mass(labeled2 == l2_max)
+                                        dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
+                                        if dist < 5:
+                                            stationary_labels.append(lbl)
+                        else:
+                            stationary_labels = list(range(1, num_features + 1))
+                        if not stationary_labels:
+                            continue
+                        valid_labels = stationary_labels
+                        mode = action.get('selection_mode', 'random')
+                        cx, cy = current_pos
+                        rel_cx = cx - min_x
+                        rel_cy = cy - min_y
+                        if mode in ['closest', 'furthest']:
+                            centers = []
+                            for lbl in valid_labels:
+                                ys, xs = np.where(labeled1 == lbl)
+                                mean_x = np.mean(xs)
+                                mean_y = np.mean(ys)
+                                dist = np.hypot(mean_x - rel_cx, mean_y - rel_cy)
+                                centers.append((lbl, dist))
+                            if not centers:
+                                continue
+                            if mode == 'closest':
+                                chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
+                            else:
+                                chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
+                        else:
+                            chosen_lbl = random.choice(valid_labels)
+                        ys, xs = np.where(labeled1 == chosen_lbl)
+                        matching = [(min_x + int(x), min_y + int(y)) for x, y in zip(xs, ys)]
+                        if matching:
+                            break
                     if not matching:
                         on_fail = action.get('on_fail', 'continue')
                         if on_fail == 'continue':
@@ -821,12 +883,71 @@ def playback_macro():
                         elif on_fail == 'wait':
                             root.after(0, lambda: update_status("Waiting for color in region..."))
                             while playback_active:
-                                im = ImageGrab.grab(bbox=(min_x, min_y, max_x, max_y))
+                                if stationary_only:
+                                    im1 = ImageGrab.grab(bbox=bbox)
+                                    interruptible_sleep(0.1)
+                                    if not playback_active:
+                                        break
+                                    im2 = ImageGrab.grab(bbox=bbox)
+                                else:
+                                    im1 = ImageGrab.grab(bbox=bbox)
+                                    im2 = None
+                                arr1 = np.array(im1)
+                                arr2 = np.array(im2) if im2 else None
                                 matching = []
-                                arr = np.array(im)
-                                mask = np.all(arr == expected, axis=-1)
-                                ys, xs = np.where(mask)
-                                matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
+                                for hex_color in action.get('expected_colors', ['#ffffff']):
+                                    expected = tuple(int(hex_color[j:j+2], 16) for j in (1, 3, 5))
+                                    mask1 = np.all(arr1 == expected, axis=-1)
+                                    labeled1, num_features = ndimage.label(mask1)
+                                    if num_features == 0:
+                                        continue
+                                    stationary_labels = []
+                                    if stationary_only:
+                                        mask2 = np.all(arr2 == expected, axis=-1)
+                                        labeled2, num2 = ndimage.label(mask2)
+                                        for lbl in range(1, num_features + 1):
+                                            comp_mask1 = (labeled1 == lbl)
+                                            overlap = np.sum(comp_mask1 & mask2) / np.sum(comp_mask1) if np.sum(comp_mask1) > 0 else 0
+                                            if overlap > 0.8:
+                                                com1 = ndimage.center_of_mass(comp_mask1)
+                                                overlapping_labels = np.unique(labeled2[comp_mask1])
+                                                overlapping_labels = overlapping_labels[overlapping_labels > 0]
+                                                if overlapping_labels.size > 0:
+                                                    overlaps = [np.sum(comp_mask1 & (labeled2 == l2)) for l2 in overlapping_labels]
+                                                    max_ol_idx = np.argmax(overlaps)
+                                                    l2_max = overlapping_labels[max_ol_idx]
+                                                    com2 = ndimage.center_of_mass(labeled2 == l2_max)
+                                                    dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
+                                                    if dist < 5:
+                                                        stationary_labels.append(lbl)
+                                    else:
+                                        stationary_labels = list(range(1, num_features + 1))
+                                    if not stationary_labels:
+                                        continue
+                                    valid_labels = stationary_labels
+                                    mode = action.get('selection_mode', 'random')
+                                    rel_cx = mouse_controller.position[0] - min_x
+                                    rel_cy = mouse_controller.position[1] - min_y
+                                    if mode in ['closest', 'furthest']:
+                                        centers = []
+                                        for lbl in valid_labels:
+                                            ys, xs = np.where(labeled1 == lbl)
+                                            mean_x = np.mean(xs)
+                                            mean_y = np.mean(ys)
+                                            dist = np.hypot(mean_x - rel_cx, mean_y - rel_cy)
+                                            centers.append((lbl, dist))
+                                        if not centers:
+                                            continue
+                                        if mode == 'closest':
+                                            chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
+                                        else:
+                                            chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
+                                    else:
+                                        chosen_lbl = random.choice(valid_labels)
+                                    ys, xs = np.where(labeled1 == chosen_lbl)
+                                    matching = [(min_x + int(x), min_y + int(y)) for x, y in zip(xs, ys)]
+                                    if matching:
+                                        break
                                 if matching:
                                     break
                                 interruptible_sleep(0.1)
@@ -840,37 +961,8 @@ def playback_macro():
                             break
                         elif on_fail == 'restart':
                             loop_stack = []
-                            i = -1  # Will increment to 0
+                            i = 0
                             continue
-                    # Find connected components
-                    if matching:
-                        labeled, num_features = ndimage.label(mask)
-                        if num_features > 0:
-                            sizes = np.bincount(labeled.ravel())[1:]
-                            valid_labels = [lbl for lbl, size in enumerate(sizes, 1) if size > 0]  # All components with size > 0
-                            if valid_labels:
-                                mode = action.get('selection_mode', 'random')
-                                if mode in ['closest', 'furthest']:
-                                    centers = []
-                                    cx, cy = current_pos
-                                    for lbl in valid_labels:
-                                        ys, xs = np.where(labeled == lbl)
-                                        mean_x = np.mean(xs)
-                                        mean_y = np.mean(ys)
-                                        center_x = min_x + mean_x
-                                        center_y = min_y + mean_y
-                                        dist = np.hypot(center_x - cx, center_y - cy)
-                                        centers.append((lbl, dist))
-                                    if centers:
-                                        if mode == 'closest':
-                                            chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
-                                        else:  # furthest
-                                            chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
-                                else:  # random
-                                    chosen_lbl = random.choice(valid_labels)
-                                # Set matching to chosen component
-                                ys, xs = np.where(labeled == chosen_lbl)
-                                matching = [(min_x + int(px), min_y + int(py)) for px, py in zip(xs, ys)]
                     # Apply border margin to (possibly chosen) matching pixels
                     if matching:
                         all_x = [p[0] for p in matching]
@@ -957,7 +1049,7 @@ def playback_macro():
                         break
                     elif on_end == 'restart':
                         loop_stack = []
-                        i = -1  # Will increment to 0
+                        i = 0
                         continue
                     elif on_end == 'wait':
                         root.after(0, lambda: update_status("Infinite wait started. Stop manually."))
@@ -1064,7 +1156,7 @@ def insert_action(action_type, after_iid=None):
         new_action['min_y'] = 0
         new_action['max_y'] = 0
     elif action_type == 'color_check':
-        new_action['expected_color'] = '#ffffff'  # Default white
+        new_action['expected_colors'] = ['#ffffff']  # Default white
         new_action['x'] = 0  # Add default x
         new_action['y'] = 0  # Add default y
         new_action['on_fail'] = 'abort'
@@ -1079,7 +1171,7 @@ def insert_action(action_type, after_iid=None):
     elif action_type == 'loop_end':
         new_action['name'] = 'loop1'
     elif action_type == 'mouse_to_color':
-        new_action['expected_color'] = '#ffffff'
+        new_action['expected_colors'] = ['#ffffff']
         new_action['min_x'] = 0
         new_action['max_x'] = 1920
         new_action['min_y'] = 0
@@ -1089,6 +1181,7 @@ def insert_action(action_type, after_iid=None):
         new_action['on_fail'] = 'continue'
         new_action['border_margin_percent'] = 20
         new_action['selection_mode'] = 'random'
+        new_action['stationary_only'] = False
     elif action_type == 'wait':
         new_action['on_end'] = 'continue'
     elif action_type == 'if_color_start':
@@ -1150,18 +1243,31 @@ def paste_at_end():
     update_status("Actions pasted at end.")
 
 def paste_smart():
-    global copied_actions
-    if not copied_actions:
-        return
     selected = tree.selection()
     if selected:
-        last = max([int(s) for s in selected])
-        paste_after(str(last))
+        after_iid = selected[-1]  # Paste after the last selected
+        paste_after(after_iid)
     else:
         paste_at_end()
 
 def update_status(text):
     status_label.config(text=text)
+
+def show_preview(min_x, max_x, min_y, max_y):
+    global preview_overlay, preview_canvas
+    if preview_overlay:
+        preview_overlay.destroy()
+    preview_overlay = tk.Toplevel(root)
+    preview_overlay.overrideredirect(True)
+    preview_overlay.attributes('-topmost', True)
+    preview_overlay.attributes('-alpha', 0.3)
+    w = root.winfo_screenwidth()
+    h = root.winfo_screenheight()
+    preview_overlay.geometry(f"{w}x{h}+0+0")
+    preview_canvas = tk.Canvas(preview_overlay, bg='black', highlightthickness=0)
+    preview_canvas.pack(fill=tk.BOTH, expand=True)
+    preview_canvas.create_rectangle(min_x, min_y, max_x, max_y, outline='red', width=2)
+    preview_canvas.bind("<Button-1>", lambda e: hide_preview())
 
 def hide_preview():
     global preview_overlay, preview_canvas
@@ -1169,82 +1275,34 @@ def hide_preview():
         preview_overlay.destroy()
         preview_overlay = None
         preview_canvas = None
-
-def show_preview(min_x, max_x, min_y, max_y):
-    global preview_overlay, preview_canvas
-    hide_preview()
-    trans_color = '#ab23ff'  # Unique transparent color
-    preview_overlay = tk.Toplevel(root)
-    preview_overlay.overrideredirect(True)
-    preview_overlay.attributes('-topmost', True)
-    preview_overlay.attributes('-transparentcolor', trans_color)
-    w = root.winfo_screenwidth()
-    h = root.winfo_screenheight()
-    preview_overlay.geometry(f"{w}x{h}+0+0")
-    preview_canvas = tk.Canvas(preview_overlay, bg=trans_color, highlightthickness=0)
-    preview_canvas.pack(fill=tk.BOTH, expand=True)
-
-    # Draw the zone
-    if min_x == max_x and min_y == max_y:
-        # Draw a cross for single point
-        half = 10
-        preview_canvas.create_line(min_x - half, min_y, min_x + half, min_y, fill='red', width=2)
-        preview_canvas.create_line(min_x, min_y - half, min_x, min_y + half, fill='red', width=2)
-    else:
-        preview_canvas.create_rectangle(min_x, min_y, max_x, max_y, outline='red', width=2)
-
-    preview_canvas.bind("<Button-1>", lambda e: hide_preview())
+        update_status("Ready")
 
 def on_tree_select(event):
+    global selected_idx, editor_labelframe
     selected = tree.selection()
-    hide_preview()
-    if len(selected) == 1:
-        global selected_idx
-        selected_idx = int(selected[0])
-        populate_editor(actions[selected_idx])
-        populate_batch(remove=True)
-        editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
-    elif len(selected) > 1:
+    if len(selected) != 1:
         clear_editor()
-        populate_batch(remove=False)
-        editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
-    else:
-        clear_editor()
-        populate_batch(remove=True)
-        editor_labelframe.pack_forget()
-
-def populate_editor(action):
+        if hasattr(editor_labelframe, 'pack_info'):
+            editor_labelframe.pack_forget()
+        if selected and len(selected) > 1 and all(actions[int(sel)]['type'] == 'mouse_move' for sel in selected):
+            populate_batch(remove=False)
+        else:
+            populate_batch(remove=True)
+        return
+    selected_idx = int(selected[0])
+    action = actions[selected_idx]
     min_delay_var.set(f"{action.get('min_delay', 0.0):.3f}")
     max_delay_var.set(f"{action.get('max_delay', 0.0):.3f}")
     type_combo.set(action['type'])
     min_delay_entry.config(state='normal')
     max_delay_entry.config(state='normal')
     type_combo.config(state='readonly')
+    populate_editor(action)
+    if not editor_labelframe.winfo_ismapped():
+        editor_labelframe.pack(pady=10, padx=10, fill=tk.X)
 
-    key_var.set(action.get('key', ''))
-    min_x_var.set(str(action.get('min_x', 0)))
-    max_x_var.set(str(action.get('max_x', 0)))
-    min_y_var.set(str(action.get('min_y', 0)))
-    max_y_var.set(str(action.get('max_y', 0)))
-    hex_var.set(action.get('expected_color', '#ffffff'))
-    check_x_var.set(str(action.get('x', 0)))
-    check_y_var.set(str(action.get('y', 0)))
-    loop_name_var.set(action.get('name', ''))
-    min_loops_var.set(str(action.get('min_loops', 1)))
-    max_loops_var.set(str(action.get('max_loops', 1)))
-    comment_var.set(action.get('comment', ''))
-    min_move_delay_var.set(f"{action.get('min_move_delay', 0.2):.3f}")
-    max_move_delay_var.set(f"{action.get('max_move_delay', 0.5):.3f}")
-    on_fail_var.set(action.get('on_fail', 'abort' if action['type'] == 'color_check' else 'continue'))
-    check_at_mouse_var.set(action.get('check_at_mouse', False))
-    border_margin_var.set(str(action.get('border_margin_percent', 20)))
-    selection_mode_var.set(action.get('selection_mode', 'random'))
-    on_success_press_var.set(action.get('on_success_press', ''))
-    tolerance_var.set(str(action.get('tolerance', 0)))
-    hold_min_ms_var.set(str(action.get('hold_min_ms', 1)))
-    hold_max_ms_var.set(str(action.get('hold_max_ms', 10)))
-
-    # Hide all type-specific widgets
+def populate_editor(action):
+    # Clear type-specific fields first
     key_label.grid_remove()
     key_entry.grid_remove()
     capture_btn.grid_remove()
@@ -1265,24 +1323,20 @@ def populate_editor(action):
     check_y_label.grid_remove()
     check_y_entry.grid_remove()
     capture_at_coord_btn.grid_remove()
-    loop_name_label.grid_remove()
-    loop_name_entry.grid_remove()
-    min_loops_label.grid_remove()
-    min_loops_entry.grid_remove()
-    max_loops_label.grid_remove()
-    max_loops_entry.grid_remove()
-    min_move_delay_label.grid_remove()
-    min_move_delay_entry.grid_remove()
-    max_move_delay_label.grid_remove()
-    max_move_delay_entry.grid_remove()
     on_fail_label.grid_remove()
     on_fail_combo.grid_remove()
     check_at_mouse_label.grid_remove()
     check_at_mouse_check.grid_remove()
+    min_move_delay_label.grid_remove()
+    min_move_delay_entry.grid_remove()
+    max_move_delay_label.grid_remove()
+    max_move_delay_entry.grid_remove()
     border_margin_label.grid_remove()
     border_margin_entry.grid_remove()
     selection_mode_label.grid_remove()
     selection_mode_combo.grid_remove()
+    stationary_only_label.grid_remove()
+    stationary_only_check.grid_remove()
     on_success_press_label.grid_remove()
     on_success_press_entry.grid_remove()
     on_success_capture_btn.grid_remove()
@@ -1292,36 +1346,58 @@ def populate_editor(action):
     hold_min_ms_entry.grid_remove()
     hold_max_ms_label.grid_remove()
     hold_max_ms_entry.grid_remove()
+    comment_label.grid_remove()
+    comment_entry.grid_remove()
+    save_btn.grid_remove()
+    delta_min_label.grid_remove()
+    delta_min_entry.grid_remove()
+    delta_max_label.grid_remove()
+    delta_max_entry.grid_remove()
+    apply_batch_btn.grid_remove()
+    hide_preview()
 
-    next_row = 2  # Start after common fields
+    next_row = 2  # After delay and type rows
 
     if action['type'] == 'key_action':
+        key_var.set(action.get('key', 'a'))
         key_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
-        key_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
-        capture_btn.grid(row=next_row, column=4, padx=5, pady=5)
+        key_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        capture_btn.grid(row=next_row, column=2, padx=5, pady=5)
         key_entry.config(state='normal')
         capture_btn.config(state='normal')
         next_row += 1
     elif action['type'] == 'mouse_move':
+        min_x_var.set(str(action.get('min_x', 0)))
+        max_x_var.set(str(action.get('max_x', 0)))
+        min_y_var.set(str(action.get('min_y', 0)))
+        max_y_var.set(str(action.get('max_y', 0)))
         min_x_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         min_x_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
         max_x_label.grid(row=next_row, column=2, padx=5, pady=5, sticky=tk.E)
         max_x_entry.grid(row=next_row, column=3, padx=5, pady=5, sticky=tk.W)
+        capture_zone_btn.grid(row=next_row, column=4, padx=5, pady=5)
         next_row += 1
         min_y_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         min_y_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
         max_y_label.grid(row=next_row, column=2, padx=5, pady=5, sticky=tk.E)
         max_y_entry.grid(row=next_row, column=3, padx=5, pady=5, sticky=tk.W)
-        capture_zone_btn.grid(row=next_row, column=4, padx=5, pady=5)
         min_x_entry.config(state='normal')
         max_x_entry.config(state='normal')
         min_y_entry.config(state='normal')
         max_y_entry.config(state='normal')
         capture_zone_btn.config(state='normal')
-        show_preview(action['min_x'], action['max_x'], action['min_y'], action['max_y'])
-        update_status("Previewing mouse zone. Click on the preview to close.")
         next_row += 1
     elif action['type'] == 'color_check':
+        hex_var.set(', '.join(action.get('expected_colors', [action.get('expected_color', '#ffffff')])))
+        check_x_var.set(str(action.get('x', 0)))
+        check_y_var.set(str(action.get('y', 0)))
+        on_fail_var.set(action.get('on_fail', 'abort'))
+        check_at_mouse_var.set(action.get('check_at_mouse', False))
+        on_success_press_var.set(action.get('on_success_press', ''))
+        tolerance_var.set(str(action.get('tolerance', 0)))
+        hold_min_ms_var.set(str(action.get('hold_min_ms', 1)))
+        hold_max_ms_var.set(str(action.get('hold_max_ms', 10)))
+        hex_label.config(text="Hex Colors (comma sep):")
         hex_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         hex_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         capture_on_click_btn.grid(row=next_row, column=4, padx=5, pady=5)
@@ -1363,6 +1439,10 @@ def populate_editor(action):
         next_row += 1
         toggle_coord_state()  # Apply initial state based on checkbox
     elif action['type'] == 'if_color_start':
+        hex_var.set(action.get('expected_color', '#ffffff'))
+        check_x_var.set(str(action.get('x', 0)))
+        check_y_var.set(str(action.get('y', 0)))
+        check_at_mouse_var.set(action.get('check_at_mouse', False))
         hex_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         hex_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         capture_on_click_btn.grid(row=next_row, column=4, padx=5, pady=5)
@@ -1383,6 +1463,18 @@ def populate_editor(action):
         next_row += 1
         toggle_coord_state()  # Apply initial state based on checkbox
     elif action['type'] == 'mouse_to_color':
+        hex_var.set(', '.join(action.get('expected_colors', ['#ffffff'])))
+        min_x_var.set(str(action.get('min_x', 0)))
+        max_x_var.set(str(action.get('max_x', 1920)))
+        min_y_var.set(str(action.get('min_y', 0)))
+        max_y_var.set(str(action.get('max_y', 1080)))
+        min_move_delay_var.set(f"{action.get('min_move_delay', 0.2):.3f}")
+        max_move_delay_var.set(f"{action.get('max_move_delay', 0.5):.3f}")
+        on_fail_var.set(action.get('on_fail', 'continue'))
+        border_margin_var.set(str(action.get('border_margin_percent', 20)))
+        selection_mode_var.set(action.get('selection_mode', 'random'))
+        stationary_only_var.set(action.get('stationary_only', False))
+        hex_label.config(text="Hex Colors (comma sep):")
         hex_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         hex_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         capture_on_click_btn.grid(row=next_row, column=4, padx=5, pady=5)
@@ -1414,6 +1506,10 @@ def populate_editor(action):
         selection_mode_combo.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         selection_mode_combo.config(state='readonly')
         next_row += 1
+        stationary_only_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        stationary_only_check.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        stationary_only_check.config(state='normal')
+        next_row += 1
         hex_entry.config(state='normal')
         capture_on_click_btn.config(state='normal')
         min_x_entry.config(state='normal')
@@ -1424,9 +1520,11 @@ def populate_editor(action):
         min_move_delay_entry.config(state='normal')
         max_move_delay_entry.config(state='normal')
         border_margin_entry.config(state='normal')
-        show_preview(action.get('min_x', 0), action.get('max_x', 0), action.get('min_y', 0), action.get('max_y', 0))
-        update_status("Previewing search region. Click on the preview to close.")
+        next_row += 1
     elif action['type'] == 'loop_start':
+        loop_name_var.set(action.get('name', 'loop1'))
+        min_loops_var.set(str(action.get('min_loops', 1)))
+        max_loops_var.set(str(action.get('max_loops', 1)))
         loop_name_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         loop_name_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
         min_loops_label.grid(row=next_row, column=2, padx=5, pady=5, sticky=tk.E)
@@ -1438,21 +1536,23 @@ def populate_editor(action):
         max_loops_entry.config(state='normal')
         next_row += 1
     elif action['type'] == 'loop_end':
+        loop_name_var.set(action.get('name', 'loop1'))
         loop_name_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         loop_name_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
         loop_name_entry.config(state='normal')
         next_row += 1
     elif action['type'] == 'wait':
         on_fail_label.config(text="After Wait:")
+        on_fail_var.set(action.get('on_end', 'continue'))
         on_fail_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         on_fail_combo.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
         on_fail_combo.config(state='readonly')
-        on_fail_var.set(action.get('on_end', 'continue'))
         next_row += 1
     elif action['type'] in ['else', 'if_end']:
         next_row += 0  # No specific fields
 
     # Show comment field (common to all types)
+    comment_var.set(action.get('comment', ''))
     comment_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
     comment_entry.grid(row=next_row, column=1, columnspan=4, padx=5, pady=5, sticky=tk.W)
     comment_entry.config(state='normal')
@@ -1505,6 +1605,7 @@ def clear_editor():
     check_at_mouse_var.set(False)
     border_margin_var.set('')
     selection_mode_var.set('')
+    stationary_only_var.set(False)
     on_success_press_var.set('')
     tolerance_var.set('')
     hold_min_ms_var.set('')
@@ -1534,6 +1635,7 @@ def clear_editor():
     save_btn.config(state='disabled')
     border_margin_entry.config(state='disabled')
     selection_mode_combo.config(state='disabled')
+    stationary_only_check.config(state='disabled')
     on_success_press_entry.config(state='disabled')
     on_success_capture_btn.config(state='disabled')
     tolerance_entry.config(state='disabled')
@@ -1580,6 +1682,8 @@ def clear_editor():
     border_margin_entry.grid_remove()
     selection_mode_label.grid_remove()
     selection_mode_combo.grid_remove()
+    stationary_only_label.grid_remove()
+    stationary_only_check.grid_remove()
     delta_min_label.grid_remove()
     delta_min_entry.grid_remove()
     delta_max_label.grid_remove()
@@ -1603,7 +1707,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'mouse_move':
@@ -1611,11 +1715,11 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'color_check':
-            action['expected_color'] = '#ffffff'
+            action['expected_colors'] = ['#ffffff']
             action['x'] = 0
             action['y'] = 0
             action['on_fail'] = 'abort'
@@ -1623,7 +1727,7 @@ def on_type_change(event):
             action['tolerance'] = 0
             action['hold_min_ms'] = 1
             action['hold_max_ms'] = 10
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode', 'on_end']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode', 'on_end', 'expected_color', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'if_color_start':
@@ -1631,11 +1735,11 @@ def on_type_change(event):
             action['x'] = 0
             action['y'] = 0
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'mouse_to_color':
-            action['expected_color'] = '#ffffff'
+            action['expected_colors'] = ['#ffffff']
             action['min_x'] = 0
             action['max_x'] = 1920
             action['min_y'] = 0
@@ -1645,28 +1749,29 @@ def on_type_change(event):
             action['on_fail'] = 'continue'
             action['border_margin_percent'] = 20
             action['selection_mode'] = 'random'
-            keys_to_del = ['key', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            action['stationary_only'] = False
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'loop_start':
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'wait':
             action['on_end'] = 'continue'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type in ['else', 'if_end']:
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
             for k in keys_to_del:
                 action.pop(k, None)
         populate_editor(action)
@@ -1696,21 +1801,26 @@ def save_changes():
             action['key'] = key_var.get().strip()
             if not action['key']:
                 raise ValueError("Key cannot be empty.")
-        elif action['type'] == 'color_check' or action['type'] == 'mouse_to_color' or action['type'] == 'if_color_start':
-            expected_color = hex_var.get().strip()
-            if not expected_color.startswith('#') or len(expected_color) != 7:
-                raise ValueError("Invalid hex color format. Use #RRGGBB.")
-            try:
-                int(expected_color[1:], 16)
-            except ValueError:
-                raise ValueError("Invalid hex color value.")
-            action['expected_color'] = expected_color
-            if action['type'] in ['color_check', 'mouse_to_color']:
-                on_fail = on_fail_var.get()
-                if on_fail not in ON_FAIL_OPTIONS:
-                    raise ValueError("Invalid on_fail option.")
-                action['on_fail'] = on_fail
-            if action['type'] in ['color_check', 'if_color_start']:
+        elif action['type'] == 'color_check' or action['type'] == 'mouse_to_color':
+            expected_colors_str = hex_var.get().strip()
+            expected_colors = [c.strip() for c in expected_colors_str.split(',') if c.strip()]
+            if not expected_colors:
+                raise ValueError("At least one hex color is required.")
+            for color in expected_colors:
+                if not color.startswith('#') or len(color) != 7:
+                    raise ValueError("Invalid hex color format. Use #RRGGBB separated by commas.")
+                try:
+                    int(color[1:], 16)
+                except ValueError:
+                    raise ValueError("Invalid hex color value.")
+            action['expected_colors'] = expected_colors
+            if 'expected_color' in action:
+                del action['expected_color']
+            on_fail = on_fail_var.get()
+            if on_fail not in ON_FAIL_OPTIONS:
+                raise ValueError("Invalid on_fail option.")
+            action['on_fail'] = on_fail
+            if action['type'] == 'color_check':
                 check_at_mouse = check_at_mouse_var.get()
                 action['check_at_mouse'] = check_at_mouse
                 if not check_at_mouse:
@@ -1725,7 +1835,6 @@ def save_changes():
                     # Remove x/y if checking at mouse
                     action.pop('x', None)
                     action.pop('y', None)
-            if action['type'] == 'color_check':
                 on_success_press = on_success_press_var.get().strip()
                 if on_success_press:
                     action['on_success_press'] = on_success_press
@@ -1756,6 +1865,30 @@ def save_changes():
                 if selection_mode not in SELECTION_MODES:
                     raise ValueError("Invalid selection mode.")
                 action['selection_mode'] = selection_mode
+                action['stationary_only'] = stationary_only_var.get()
+        elif action['type'] == 'if_color_start':
+            expected_color = hex_var.get().strip()
+            if not expected_color.startswith('#') or len(expected_color) != 7:
+                raise ValueError("Invalid hex color format. Use #RRGGBB.")
+            try:
+                int(expected_color[1:], 16)
+            except ValueError:
+                raise ValueError("Invalid hex color value.")
+            action['expected_color'] = expected_color
+            check_at_mouse = check_at_mouse_var.get()
+            action['check_at_mouse'] = check_at_mouse
+            if not check_at_mouse:
+                try:
+                    x = int(check_x_var.get())
+                    y = int(check_y_var.get())
+                except ValueError:
+                    raise ValueError("X and Y must be integers if not checking at mouse.")
+                action['x'] = x
+                action['y'] = y
+            else:
+                # Remove x/y if checking at mouse
+                action.pop('x', None)
+                action.pop('y', None)
         elif action['type'] == 'loop_start':
             name = loop_name_var.get().strip()
             if not name:
@@ -1787,7 +1920,6 @@ def save_changes():
     tree.selection_set(str(selected_idx))
     if action['type'] == 'mouse_move' or action['type'] == 'mouse_to_color':
         hide_preview()
-        show_preview(action['min_x'], action['max_x'], action['min_y'], action['max_y'])
     update_status("Changes saved.")
 
 def apply_batch_delay():
@@ -1933,9 +2065,13 @@ def capture_color_on_click():
         if pressed and button == Button.left:
             color = get_pixel_color(x, y)
             hex_color = f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
-            hex_var.set(hex_color)
+            current_colors = hex_var.get().strip()
+            if current_colors:
+                hex_var.set(current_colors + ', ' + hex_color)
+            else:
+                hex_var.set(hex_color)
             # For color_check, set position; for mouse_to_color, just color (position ignored)
-            if actions[selected_idx]['type'] == 'color_check':
+            if actions[selected_idx]['type'] in ['color_check', 'if_color_start']:
                 check_x_var.set(str(x))
                 check_y_var.set(str(y))
             update_status("Color captured.")
@@ -2201,12 +2337,26 @@ scrollbar = ttk.Scrollbar(root, orient="vertical", command=tree.yview)
 tree.configure(yscroll=scrollbar.set)
 scrollbar.pack(side="right", fill="y")
 
-# Editor frame
+# Editor frame with scroll
 editor_labelframe = ttk.LabelFrame(root, text="Edit Selected Action", padding=10)
 # Note: We pack this dynamically in on_tree_select, so no initial pack here
 
-editor_frame = ttk.Frame(editor_labelframe)
-editor_frame.pack(fill=tk.X)
+editor_canvas = tk.Canvas(editor_labelframe)
+editor_scrollbar = ttk.Scrollbar(editor_labelframe, orient="vertical", command=editor_canvas.yview)
+editor_frame = ttk.Frame(editor_canvas)
+
+editor_frame.bind(
+    "<Configure>",
+    lambda e: editor_canvas.configure(
+        scrollregion=editor_canvas.bbox("all")
+    )
+)
+
+editor_canvas.create_window((0, 0), window=editor_frame, anchor="nw")
+editor_canvas.configure(yscrollcommand=editor_scrollbar.set)
+
+editor_scrollbar.pack(side="right", fill="y")
+editor_canvas.pack(side="left", fill="both", expand=True)
 
 # Variables
 min_delay_var = tk.StringVar()
@@ -2232,6 +2382,7 @@ check_at_mouse_var = tk.BooleanVar(value=False)
 check_at_mouse_var.trace('w', toggle_coord_state)
 border_margin_var = tk.StringVar()
 selection_mode_var = tk.StringVar()
+stationary_only_var = tk.BooleanVar()
 on_success_press_var = tk.StringVar()
 tolerance_var = tk.StringVar()
 hold_min_ms_var = tk.StringVar()
@@ -2285,10 +2436,10 @@ Tooltip(capture_zone_btn, "Capture a mouse zone by dragging.")
 
 hex_label = ttk.Label(editor_frame, text="Hex Color:")
 hex_entry = ttk.Entry(editor_frame, textvariable=hex_var, state='disabled', width=15)
-Tooltip(hex_entry, "Expected color in hex format (#RRGGBB).")
+Tooltip(hex_entry, "Expected color in hex format (#RRGGBB). For multiple in mouse_to_color, separate by comma.")
 
 capture_on_click_btn = ttk.Button(editor_frame, text="Capture on Click", command=capture_color_on_click, state='disabled')
-Tooltip(capture_on_click_btn, "After 3s delay, click to capture color at clicked position.")
+Tooltip(capture_on_click_btn, "After 3s delay, click to capture color at clicked position. For mouse_to_color, appends to list.")
 
 check_x_label = ttk.Label(editor_frame, text="X:")
 check_x_entry = ttk.Entry(editor_frame, textvariable=check_x_var, state='disabled', width=10)
@@ -2340,6 +2491,10 @@ Tooltip(border_margin_entry, "Percentage of border margin to avoid clicking near
 selection_mode_label = ttk.Label(editor_frame, text="Selection Mode:")
 selection_mode_combo = ttk.Combobox(editor_frame, values=SELECTION_MODES, state='disabled', textvariable=selection_mode_var)
 Tooltip(selection_mode_combo, "How to select color mass: random (any component), closest (to mouse), furthest (from mouse).")
+
+stationary_only_label = ttk.Label(editor_frame, text="Stationary Only:")
+stationary_only_check = ttk.Checkbutton(editor_frame, variable=stationary_only_var)
+Tooltip(stationary_only_check, "If checked, only consider non-moving color masses by comparing two snapshots.")
 
 on_success_press_label = ttk.Label(editor_frame, text="On Success Press:")
 on_success_press_entry = ttk.Entry(editor_frame, textvariable=on_success_press_var, width=15)
