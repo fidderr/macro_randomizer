@@ -283,7 +283,9 @@ def get_action_details(action):
         max_x = action.get('max_x', 0)
         min_y = action.get('min_y', 0)
         max_y = action.get('max_y', 0)
-        return f"Move to colors {color_str}{stat_str} in region ({min_x}-{max_x}, {min_y}-{max_y}) on_fail: {on_fail} border_margin: {border_margin}% selection_mode: {selection_mode}"
+        move_th = action.get('movement_threshold_pixels', 2)
+        th_str = f" movement_threshold: {move_th}px" if stationary_only else ""
+        return f"Move to colors {color_str}{stat_str}{th_str} in region ({min_x}-{max_x}, {min_y}-{max_y}) on_fail: {on_fail} border_margin: {border_margin}% selection_mode: {selection_mode}"
     elif action['type'] == 'wait':
         min_d = action.get('min_delay', 0.0)
         max_d = action.get('max_delay', 0.0)
@@ -820,12 +822,14 @@ def playback_macro():
                     arr1 = np.array(im1)
                     arr2 = np.array(im2) if im2 else None
                     matching = []
+                    found = False
                     for hex_color in action.get('expected_colors', ['#ffffff']):
                         expected = tuple(int(hex_color[j:j+2], 16) for j in (1, 3, 5))
                         mask1 = np.all(arr1 == expected, axis=-1)
                         labeled1, num_features = ndimage.label(mask1)
                         if num_features == 0:
                             continue
+                        has_mass = True
                         stationary_labels = []
                         if stationary_only:
                             mask2 = np.all(arr2 == expected, axis=-1)
@@ -835,7 +839,7 @@ def playback_macro():
                                 size1 = np.sum(comp_mask1)
                                 overlap_sum = np.sum(comp_mask1 & mask2)
                                 overlap = overlap_sum / size1 if size1 > 0 else 0
-                                if overlap == 1.0:
+                                if overlap > 0.9:
                                     overlapping_labels = np.unique(labeled2[comp_mask1])
                                     overlapping_labels = overlapping_labels[overlapping_labels > 0]
                                     if overlapping_labels.size > 0:
@@ -843,41 +847,45 @@ def playback_macro():
                                         max_ol_idx = np.argmax(overlaps)
                                         l2_max = overlapping_labels[max_ol_idx]
                                         size2 = np.sum(labeled2 == l2_max)
-                                        if size1 == size2:
+                                        if abs(size1 - size2) / max(size1, size2) < 0.1:
                                             com1 = ndimage.center_of_mass(comp_mask1)
                                             com2 = ndimage.center_of_mass(labeled2 == l2_max)
                                             dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
-                                            if dist < 0.1:
+                                            if dist < action.get('movement_threshold_pixels', 2):
                                                 stationary_labels.append(lbl)
                         else:
                             stationary_labels = list(range(1, num_features + 1))
-                        if not stationary_labels:
-                            continue
-                        valid_labels = stationary_labels
-                        mode = action.get('selection_mode', 'random')
-                        cx, cy = current_pos
-                        rel_cx = cx - min_x
-                        rel_cy = cy - min_y
-                        if mode in ['closest', 'furthest']:
-                            centers = []
-                            for lbl in valid_labels:
-                                ys, xs = np.where(labeled1 == lbl)
-                                mean_x = np.mean(xs)
-                                mean_y = np.mean(ys)
-                                dist = np.hypot(mean_x - rel_cx, mean_y - rel_cy)
-                                centers.append((lbl, dist))
-                            if not centers:
-                                continue
-                            if mode == 'closest':
-                                chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
+                        if stationary_only and not stationary_labels:
+                            matching = []
+                            found = True  # has mass but no stationary
+                            break  # fail, don't try next colors
+                        if stationary_labels:
+                            valid_labels = stationary_labels
+                            mode = action.get('selection_mode', 'random')
+                            cx, cy = current_pos
+                            rel_cx = cx - min_x
+                            rel_cy = cy - min_y
+                            if mode in ['closest', 'furthest']:
+                                centers = []
+                                for lbl in valid_labels:
+                                    ys, xs = np.where(labeled1 == lbl)
+                                    mean_x = np.mean(xs)
+                                    mean_y = np.mean(ys)
+                                    dist = np.hypot(mean_x - rel_cx, mean_y - rel_cy)
+                                    centers.append((lbl, dist))
+                                if not centers:
+                                    continue
+                                if mode == 'closest':
+                                    chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
+                                else:
+                                    chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
                             else:
-                                chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
-                        else:
-                            chosen_lbl = random.choice(valid_labels)
-                        ys, xs = np.where(labeled1 == chosen_lbl)
-                        matching = [(min_x + int(x), min_y + int(y)) for x, y in zip(xs, ys)]
-                        if matching:
-                            break
+                                chosen_lbl = random.choice(valid_labels)
+                            ys, xs = np.where(labeled1 == chosen_lbl)
+                            matching = [(min_x + int(x), min_y + int(y)) for x, y in zip(xs, ys)]
+                            if matching:
+                                found = True
+                                break
                     if not matching:
                         on_fail = action.get('on_fail', 'continue')
                         if on_fail == 'continue':
@@ -905,6 +913,7 @@ def playback_macro():
                                     labeled1, num_features = ndimage.label(mask1)
                                     if num_features == 0:
                                         continue
+                                    has_mass = True
                                     stationary_labels = []
                                     if stationary_only:
                                         mask2 = np.all(arr2 == expected, axis=-1)
@@ -914,7 +923,7 @@ def playback_macro():
                                             size1 = np.sum(comp_mask1)
                                             overlap_sum = np.sum(comp_mask1 & mask2)
                                             overlap = overlap_sum / size1 if size1 > 0 else 0
-                                            if overlap == 1.0:
+                                            if overlap > 0.9:
                                                 overlapping_labels = np.unique(labeled2[comp_mask1])
                                                 overlapping_labels = overlapping_labels[overlapping_labels > 0]
                                                 if overlapping_labels.size > 0:
@@ -922,40 +931,44 @@ def playback_macro():
                                                     max_ol_idx = np.argmax(overlaps)
                                                     l2_max = overlapping_labels[max_ol_idx]
                                                     size2 = np.sum(labeled2 == l2_max)
-                                                    if size1 == size2:
+                                                    if abs(size1 - size2) / max(size1, size2) < 0.1:
                                                         com1 = ndimage.center_of_mass(comp_mask1)
                                                         com2 = ndimage.center_of_mass(labeled2 == l2_max)
                                                         dist = np.hypot(com1[0] - com2[0], com1[1] - com2[1])
-                                                        if dist < 0.1:
+                                                        if dist < action.get('movement_threshold_pixels', 2):
                                                             stationary_labels.append(lbl)
                                     else:
                                         stationary_labels = list(range(1, num_features + 1))
-                                    if not stationary_labels:
-                                        continue
-                                    valid_labels = stationary_labels
-                                    mode = action.get('selection_mode', 'random')
-                                    rel_cx = mouse_controller.position[0] - min_x
-                                    rel_cy = mouse_controller.position[1] - min_y
-                                    if mode in ['closest', 'furthest']:
-                                        centers = []
-                                        for lbl in valid_labels:
-                                            ys, xs = np.where(labeled1 == lbl)
-                                            mean_x = np.mean(xs)
-                                            mean_y = np.mean(ys)
-                                            dist = np.hypot(mean_x - rel_cx, mean_y - rel_cy)
-                                            centers.append((lbl, dist))
-                                        if not centers:
-                                            continue
-                                        if mode == 'closest':
-                                            chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
+                                    if stationary_only and not stationary_labels:
+                                        matching = []
+                                        found = True  # has mass but no stationary
+                                        break  # fail, don't try next colors
+                                    if stationary_labels:
+                                        valid_labels = stationary_labels
+                                        mode = action.get('selection_mode', 'random')
+                                        rel_cx = mouse_controller.position[0] - min_x
+                                        rel_cy = mouse_controller.position[1] - min_y
+                                        if mode in ['closest', 'furthest']:
+                                            centers = []
+                                            for lbl in valid_labels:
+                                                ys, xs = np.where(labeled1 == lbl)
+                                                mean_x = np.mean(xs)
+                                                mean_y = np.mean(ys)
+                                                dist = np.hypot(mean_x - rel_cx, mean_y - rel_cy)
+                                                centers.append((lbl, dist))
+                                            if not centers:
+                                                continue
+                                            if mode == 'closest':
+                                                chosen_lbl = min(centers, key=lambda cd: cd[1])[0]
+                                            else:
+                                                chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
                                         else:
-                                            chosen_lbl = max(centers, key=lambda cd: cd[1])[0]
-                                    else:
-                                        chosen_lbl = random.choice(valid_labels)
-                                    ys, xs = np.where(labeled1 == chosen_lbl)
-                                    matching = [(min_x + int(x), min_y + int(y)) for x, y in zip(xs, ys)]
-                                    if matching:
-                                        break
+                                            chosen_lbl = random.choice(valid_labels)
+                                        ys, xs = np.where(labeled1 == chosen_lbl)
+                                        matching = [(min_x + int(x), min_y + int(y)) for x, y in zip(xs, ys)]
+                                        if matching:
+                                            found = True
+                                            break
                                 if matching:
                                     break
                                 interruptible_sleep(0.1)
@@ -1190,6 +1203,7 @@ def insert_action(action_type, after_iid=None):
         new_action['border_margin_percent'] = 20
         new_action['selection_mode'] = 'random'
         new_action['stationary_only'] = False
+        new_action['movement_threshold_pixels'] = 2
     elif action_type == 'wait':
         new_action['on_end'] = 'continue'
     elif action_type == 'if_color_start':
@@ -1345,6 +1359,8 @@ def populate_editor(action):
     selection_mode_combo.grid_remove()
     stationary_only_label.grid_remove()
     stationary_only_check.grid_remove()
+    movement_threshold_label.grid_remove()
+    movement_threshold_entry.grid_remove()
     on_success_press_label.grid_remove()
     on_success_press_entry.grid_remove()
     on_success_capture_btn.grid_remove()
@@ -1482,6 +1498,7 @@ def populate_editor(action):
         border_margin_var.set(str(action.get('border_margin_percent', 20)))
         selection_mode_var.set(action.get('selection_mode', 'random'))
         stationary_only_var.set(action.get('stationary_only', False))
+        movement_threshold_var.set(str(action.get('movement_threshold_pixels', 2)))
         hex_label.config(text="Hex Colors (comma sep):")
         hex_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         hex_entry.grid(row=next_row, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
@@ -1516,7 +1533,10 @@ def populate_editor(action):
         next_row += 1
         stationary_only_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
         stationary_only_check.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
-        stationary_only_check.config(state='normal')
+        next_row += 1
+        movement_threshold_label.grid(row=next_row, column=0, padx=5, pady=5, sticky=tk.E)
+        movement_threshold_entry.grid(row=next_row, column=1, padx=5, pady=5, sticky=tk.W)
+        movement_threshold_entry.config(state='normal')
         next_row += 1
         hex_entry.config(state='normal')
         capture_on_click_btn.config(state='normal')
@@ -1528,6 +1548,7 @@ def populate_editor(action):
         min_move_delay_entry.config(state='normal')
         max_move_delay_entry.config(state='normal')
         border_margin_entry.config(state='normal')
+        stationary_only_check.config(state='normal')
         next_row += 1
     elif action['type'] == 'loop_start':
         loop_name_var.set(action.get('name', 'loop1'))
@@ -1614,6 +1635,7 @@ def clear_editor():
     border_margin_var.set('')
     selection_mode_var.set('')
     stationary_only_var.set(False)
+    movement_threshold_var.set('')
     on_success_press_var.set('')
     tolerance_var.set('')
     hold_min_ms_var.set('')
@@ -1644,6 +1666,7 @@ def clear_editor():
     border_margin_entry.config(state='disabled')
     selection_mode_combo.config(state='disabled')
     stationary_only_check.config(state='disabled')
+    movement_threshold_entry.config(state='disabled')
     on_success_press_entry.config(state='disabled')
     on_success_capture_btn.config(state='disabled')
     tolerance_entry.config(state='disabled')
@@ -1692,6 +1715,8 @@ def clear_editor():
     selection_mode_combo.grid_remove()
     stationary_only_label.grid_remove()
     stationary_only_check.grid_remove()
+    movement_threshold_label.grid_remove()
+    movement_threshold_entry.grid_remove()
     delta_min_label.grid_remove()
     delta_min_entry.grid_remove()
     delta_max_label.grid_remove()
@@ -1715,7 +1740,7 @@ def on_type_change(event):
         action['type'] = new_type
         if new_type == 'key_action':
             action['key'] = 'a'
-            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'mouse_move':
@@ -1723,7 +1748,7 @@ def on_type_change(event):
             action['max_x'] = 0
             action['min_y'] = 0
             action['max_y'] = 0
-            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'color_check':
@@ -1735,7 +1760,7 @@ def on_type_change(event):
             action['tolerance'] = 0
             action['hold_min_ms'] = 1
             action['hold_max_ms'] = 10
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode', 'on_end', 'expected_color', 'stationary_only']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'border_margin_percent', 'selection_mode', 'on_end', 'expected_color', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'if_color_start':
@@ -1743,7 +1768,7 @@ def on_type_change(event):
             action['x'] = 0
             action['y'] = 0
             action['check_at_mouse'] = False
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'mouse_to_color':
@@ -1758,6 +1783,7 @@ def on_type_change(event):
             action['border_margin_percent'] = 20
             action['selection_mode'] = 'random'
             action['stationary_only'] = False
+            action['movement_threshold_pixels'] = 2
             keys_to_del = ['key', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'check_at_mouse', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms']
             for k in keys_to_del:
                 action.pop(k, None)
@@ -1765,21 +1791,21 @@ def on_type_change(event):
             action['name'] = 'loop1'
             action['min_loops'] = 1
             action['max_loops'] = 1
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'loop_end':
             action['name'] = 'loop1'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type == 'wait':
             action['on_end'] = 'continue'
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         elif new_type in ['else', 'if_end']:
-            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only']
+            keys_to_del = ['key', 'min_x', 'max_x', 'min_y', 'max_y', 'expected_color', 'x', 'y', 'name', 'min_loops', 'max_loops', 'min_move_delay', 'max_move_delay', 'on_fail', 'check_at_mouse', 'border_margin_percent', 'selection_mode', 'on_end', 'on_success_press', 'tolerance', 'hold_min_ms', 'hold_max_ms', 'expected_colors', 'stationary_only', 'movement_threshold_pixels']
             for k in keys_to_del:
                 action.pop(k, None)
         populate_editor(action)
@@ -1874,6 +1900,10 @@ def save_changes():
                     raise ValueError("Invalid selection mode.")
                 action['selection_mode'] = selection_mode
                 action['stationary_only'] = stationary_only_var.get()
+                movement_threshold = int(movement_threshold_var.get())
+                if movement_threshold < 0:
+                    raise ValueError("Movement threshold must be non-negative.")
+                action['movement_threshold_pixels'] = movement_threshold
         elif action['type'] == 'if_color_start':
             expected_color = hex_var.get().strip()
             if not expected_color.startswith('#') or len(expected_color) != 7:
@@ -2391,6 +2421,7 @@ check_at_mouse_var.trace('w', toggle_coord_state)
 border_margin_var = tk.StringVar()
 selection_mode_var = tk.StringVar()
 stationary_only_var = tk.BooleanVar()
+movement_threshold_var = tk.StringVar()
 on_success_press_var = tk.StringVar()
 tolerance_var = tk.StringVar()
 hold_min_ms_var = tk.StringVar()
@@ -2503,6 +2534,10 @@ Tooltip(selection_mode_combo, "How to select color mass: random (any component),
 stationary_only_label = ttk.Label(editor_frame, text="Stationary Only:")
 stationary_only_check = ttk.Checkbutton(editor_frame, variable=stationary_only_var)
 Tooltip(stationary_only_check, "If checked, only consider non-moving color masses by comparing two snapshots.")
+
+movement_threshold_label = ttk.Label(editor_frame, text="Movement Threshold (px):")
+movement_threshold_entry = ttk.Entry(editor_frame, textvariable=movement_threshold_var, width=15)
+Tooltip(movement_threshold_entry, "Maximum allowed center of mass movement in pixels for stationary check.")
 
 on_success_press_label = ttk.Label(editor_frame, text="On Success Press:")
 on_success_press_entry = ttk.Entry(editor_frame, textvariable=on_success_press_var, width=15)
